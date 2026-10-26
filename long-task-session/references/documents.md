@@ -131,6 +131,8 @@
 | `artifacts/<path>` | model/log/table | `<hex>` | `<bytes>` | <一句话> | `<backup path 或 ->` |
 
 - 由 `sessionctl ckpt` 追加；`sessionctl close` 把备份包路径补进 `备份位置` 列。
+- **目录产物无法哈希校验**：登记目录时 `ckpt` 会打印打包命令；要么打包成归档文件后重新 `ckpt` 登记
+  （这才可被 `verify` 校验），要么在"说明"列写清目录内容清单与条目数。
 - `verify` 逐行校验；`source: caller` 的行标注"未本地校验"。
 
 ---

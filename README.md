@@ -41,17 +41,17 @@ HTTPS_PROXY=http://10.10.11.13:7897 HTTP_PROXY=http://10.10.11.13:7897 \
 bash long-task-session/tests/selftest.sh
 ```
 
-覆盖 30 组断言（67 个检查点）：创建/幂等/冲突、lite 模式、status 四项检查、ckpt 与哈希校验（含篡改、目录产物、
+覆盖 32 组断言（71 个检查点）：创建/幂等/冲突、lite 模式、status 四项检查、ckpt 与哈希校验（含篡改、目录产物、
 外部哈希）、ckpt 去重、note 去重、resume 与三条禁止事项及其退出码、close 与备份（含 `--backup` 无值、
 `--force`、stage 推进、归档前四项检查）、launcher 实跑与幂等、watcher 心跳消毒、list/reconcile、
 心跳判活（running/stale）、state 白名单与 blockers 类型、`{{` 误报、py_compile 与纯 stdlib、
-`TZ=UTC` 复跑、README 安装命令 owner 拼写。
+`TZ=UTC` 复跑、`list` 两种输出模式、目录产物打包提示、README 安装命令 owner 拼写。
 
 最近一次结果（2026-10-26，Linux，Python 3.13）：
 
 ```
-==== 结果：PASS=67 FAIL=0 ====      # 仓库内运行
-==== 结果：PASS=66 FAIL=0 ====      # 安装副本运行（无仓库根 README，跳过该条）
+==== 结果：PASS=71 FAIL=0 ====      # 仓库内运行
+==== 结果：PASS=70 FAIL=0 ====      # 安装副本运行（无仓库根 README，跳过该条）
 ```
 
 ## 发布彩排记录

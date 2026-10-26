@@ -88,6 +88,9 @@ python3 <skill>/scripts/sessionctl.py new <slug> --root ./sessions
 # 2) 填 SESSION_PLAN.md（七件硬内容）与单变量表，然后自检
 python3 <skill>/scripts/sessionctl.py status --session ./sessions/2026-01-01-<slug>
 
+# 2.5) 找会话（默认给人看；--paths 给脚本用，一行一个绝对路径）
+python3 <skill>/scripts/sessionctl.py list --paths
+
 # 3) 执行期：里程碑登记产物、随手记录
 python3 <skill>/scripts/sessionctl.py ckpt train-done --artifact artifacts/model/
 python3 <skill>/scripts/sessionctl.py note --key fix-1 "把 X 改成 Y，因为 Z"

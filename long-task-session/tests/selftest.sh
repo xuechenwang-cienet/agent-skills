@@ -105,7 +105,7 @@ $CTL state gates.a.verdict neutral --session "$g3" >/dev/null 2>&1
 $CTL close --session "$g3" --backup "$TMP/backups" >/dev/null 2>&1; check "gate 有 verdict → close=0" 0 $?
 
 echo "== 8. list / reconcile"
-$CTL list --root "$TMP" | tail -n +2 | awk '{print $1}' > "$TMP/_list.txt"
+$CTL list --root "$TMP" | tail -n +3 | awk '{print $1}' > "$TMP/_list.txt"
 sort "$TMP/_list.txt" > "$TMP/_sorted.txt"
 diff -q "$TMP/_list.txt" "$TMP/_sorted.txt" >/dev/null && ok "list 按目录名排序" || bad "list 按目录名排序"
 $CTL reconcile --root "$TMP" 2>&1 | grep -q "最新会话" && ok "reconcile 摘要" || bad "reconcile 摘要"
@@ -146,7 +146,9 @@ fi
 echo "== T1. 目录产物不崩（B1）"
 $CTL new d1 --root "$TMP/t" >/dev/null 2>&1; s1=$(ls -td "$TMP/t"/*-d1 | head -1)
 mkdir -p "$s1/artifacts/sub" && echo x > "$s1/artifacts/sub/x.txt"
-$CTL ckpt dir-art --artifact artifacts/sub --session "$s1" >/dev/null 2>&1; check "ckpt 目录产物" 0 $?
+ckout=$($CTL ckpt dir-art --artifact artifacts/sub --session "$s1" 2>&1); rc=$?
+check "ckpt 目录产物" 0 $rc "$ckout"
+echo "$ckout" | grep -q "tar -czf" && ok "ckpt 目录产物给出打包命令" || bad "ckpt 目录产物给出打包命令" "$ckout"
 v=$($CTL verify --session "$s1" 2>&1); rc=$?
 check "verify 目录产物不崩" 0 $rc "$v"
 echo "$v" | grep -q "目录产物" && ok "verify 标注目录产物" || bad "verify 标注目录产物"
@@ -224,6 +226,13 @@ $CTL ckpt f --artifact artifacts/f.txt --session "$s10" >/dev/null 2>&1
 $CTL resume --session "$s10" --prompt >/dev/null 2>&1; check "产物完好 → resume --prompt=0" 0 $?
 echo broken > "$s10/artifacts/f.txt"
 $CTL resume --session "$s10" --prompt >/dev/null 2>&1; check "产物损坏 → resume --prompt=1" 1 $?
+
+echo "== T11. list 输出（root 头 / --paths）"
+$CTL list --root "$TMP/t" | head -1 | grep -q "^root: /" && ok "list 首行打印 root 绝对路径" || bad "list 首行打印 root 绝对路径"
+n_paths=$($CTL list --root "$TMP/t" --paths | wc -l)
+n_dirs=$(for d in "$TMP/t"/*/; do [[ -f "$d/state.json" ]] && echo x; done | wc -l)
+[[ "$n_paths" == "$n_dirs" ]] && ok "list --paths 行数=会话数（$n_paths）" || bad "list --paths 行数=会话数" "$n_paths vs $n_dirs"
+$CTL list --root "$TMP/t" --paths | grep -qv "^/" && bad "list --paths 全为绝对路径" || ok "list --paths 全为绝对路径"
 
 echo
 echo "==== 结果：PASS=$pass FAIL=$fail ===="

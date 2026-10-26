@@ -440,6 +440,11 @@ def cmd_list(args) -> int:
     if not dirs:
         print(f"(no sessions under {root})")
         return 0
+    if getattr(args, "paths", False):
+        for d in dirs:
+            print(d)
+        return 0
+    print(f"root: {root}")
     print(f"{'session':<40}{'stage':<8}{'status':<10}{'mode':<7}{'updated_at'}")
     for d in dirs:
         try:
@@ -518,7 +523,10 @@ def check_artifacts(session: Path, st: dict) -> tuple[bool, list[str], list[str]
             if r["sha256"].strip("`") not in ("dir", ""):
                 errors.append(f"{r['path']} 是目录但记录了文件哈希 {r['sha256'][:16]}…")
             else:
-                notes.append(f"{r['path']}：目录产物，未做哈希（内容以 CKPT 记录为准）")
+                notes.append(
+                    f"{r['path']}：目录产物未做哈希（内容以 CKPT 记录为准）；"
+                    "建议 tar 打包后用 ckpt 登记归档文件，才能被校验"
+                )
             continue
         actual = sha256_file(path)
         if r["sha256"] and not actual.startswith(r["sha256"].strip("`")[:64]):
@@ -683,6 +691,19 @@ def cmd_ckpt(args) -> int:
     )
     replace_state_block(session / "SESSION_LOG.md", st)
     print(f"ckpt {args.name}: {rel} sha256={sha[:16]}… source={source}")
+    if resolved.is_dir():
+        name = Path(rel).name
+        script = Path(sys.argv[0]).resolve()
+        archive = f"artifacts/{name}.tar.gz"
+        print("→ 目录产物无法做哈希校验；建议打包后登记归档文件：")
+        if not Path(rel).is_absolute():
+            print(f"  tar -czf {session}/{archive} -C {session} {rel}")
+        else:
+            print(f"  tar -czf {session}/{archive} {rel}")
+        print(
+            f"  python3 {script} ckpt {args.name}-archive --artifact {archive} "
+            f"--session {session}"
+        )
     return 0
 
 
@@ -1006,6 +1027,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("list", help="列出会话")
     p.add_argument("--root", default="./sessions")
+    p.add_argument("--paths", action="store_true", help="只输出绝对路径，一行一个")
     p.set_defaults(func=cmd_list)
 
     p = sub.add_parser("status", help="四项检查（任一失败退出码 1）")
