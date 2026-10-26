@@ -27,6 +27,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -38,7 +39,7 @@ SCHEMA = 1
 STAGES = ["S0", "S1", "S2", "S3", "S4", "S5"]
 STATUSES = ["idle", "running", "blocked", "done"]
 MODES = ["full", "lite"]
-RUN_STATES = ["running", "done", "failed", "stale"]
+RUN_STATES = ["running", "done", "failed", "stale", "stopped"]
 VERDICTS = ["pass", "fail", "neutral"]
 
 PLAN_REQUIRED = [
@@ -307,7 +308,12 @@ def append_artifact_row(
 def cmd_new(args) -> int:
     root = Path(args.root).expanduser().resolve()
     slug = args.slug
-    today = dt.datetime.now().astimezone().date().isoformat()
+    today = args.date or dt.datetime.now().astimezone().date().isoformat()
+    if args.date:
+        try:
+            dt.date.fromisoformat(args.date)
+        except ValueError:
+            die(f"--date 需要 YYYY-MM-DD，收到 {args.date}")
     session_id = f"{today}-{slug}"
     target = root / session_id
 
@@ -502,6 +508,20 @@ def check_state(session: Path) -> tuple[bool, list[str], dict]:
     return (not problems), problems, st
 
 
+def resolve_artifact_path(session: Path, path_str: str) -> Path:
+    """把登记的相对路径解析成绝对路径：依次尝试 session/、仓库根/、cwd/。
+
+    这样 `status` 的结果与“在哪个目录执行”无关——交接到新上下文时尤其重要。
+    """
+    p = Path(path_str)
+    if p.is_absolute():
+        return p
+    for base in (session, repo_root(session), Path.cwd()):
+        if base and (base / p).exists():
+            return (base / p).resolve()
+    return (session / p)
+
+
 def check_artifacts(session: Path, st: dict) -> tuple[bool, list[str], list[str]]:
     """返回 (通过?, 错误, 提示)。lite 或无产物时通过。"""
     if st.get("mode") == "lite":
@@ -511,9 +531,7 @@ def check_artifacts(session: Path, st: dict) -> tuple[bool, list[str], list[str]
         return True, [], ["暂无登记产物"]
     errors, notes = [], []
     for r in rows:
-        path = session / r["path"]
-        if not Path(r["path"]).is_absolute() and not path.exists():
-            path = Path(r["path"])
+        path = resolve_artifact_path(session, r["path"])
         if "source: caller" in r.get("note", ""):
             notes.append(f"{r['path']}：调用方哈希，未本地校验")
             continue
@@ -626,6 +644,12 @@ def cmd_status(args) -> int:
         else:
             print(f"  ▶ 推进权：{decision}（判读后可直接推进，并重新挂 observe）")
     passed = sum(1 for _, ok, _ in checks if ok)
+    expect = getattr(args, "expect_stage", None)
+    stage = (st or {}).get("stage")
+    # S3/S4 期"验收表未判定"是预期状态：只允许第 4 项失败，且 stage 与 --expect-stage 一致
+    if passed == 3 and not ok4 and expect and stage == expect and stage != "S5":
+        print(f"status: EXPECTED 3/4（stage={stage}，gates 未判定属预期）")
+        return 0
     print(f"status: {'PASS' if passed == 4 else 'FAIL'} {passed}/4")
     return 0 if passed == 4 else 1
 
@@ -643,6 +667,102 @@ def cmd_note(args) -> int:
     st = load_state(session)
     replace_state_block(log, st)
     print(f"noted: {line}")
+    return 0
+
+
+def cmd_run(args) -> int:
+    """把一条命令 detached 起起来（setsid 新会话），并把 pid/log/cmd 登记进 state.runs。
+
+    为什么要有它：`pgrep -f … | xargs kill` 会匹配到执行者自己的命令行（本项目踩过两次）。
+    先登记 pid，再用 `stop-run <id>` 精确停，是唯一安全的方式。
+    """
+    session = resolve_session(args)
+    log = Path(args.log).expanduser()
+    if not log.is_absolute():
+        log = session / log
+    log.parent.mkdir(parents=True, exist_ok=True)
+    cwd = str(Path(args.cwd).expanduser()) if args.cwd else None
+    env = dict(os.environ)
+    env["SESSION_DIR"] = str(session)
+    fh = open(log, "ab")
+    proc = subprocess.Popen(
+        ["bash", "-c", args.cmd],
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=fh,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    iso, epoch = now_pair()
+    st = load_state(session)
+    if any(r.get("id") == args.stage and r.get("state") == "running" for r in st.get("runs") or []):
+        die(f"stage '{args.stage}' 已在运行；先 stop-run 或换名字")
+    st.setdefault("runs", []).append(
+        {
+            "id": args.stage,
+            "kind": "long",
+            "started_at": f"{iso} ({epoch})",
+            "heartbeat_interval_s": args.interval,
+            "terminal_marker": args.marker,
+            "state": "running",
+            "artifact": None,
+            "sha256": None,
+            "sha256_source": None,
+            "pid": proc.pid,
+            "cmd": args.cmd,
+            "log": str(log),
+        }
+    )
+    save_state(session, st)
+    print(f"RUN stage={args.stage} pid={proc.pid} log={log}")
+    return 0
+
+
+def cmd_stop_run(args) -> int:
+    """按 state.runs 里登记的 pid 精确停一个 run（含其进程组）。"""
+    session = resolve_session(args)
+    st = load_state(session)
+    run = next(
+        (r for r in st.get("runs") or [] if r.get("id") == args.run_id and r.get("state") == "running"),
+        None,
+    )
+    if run is None:
+        die(f"没有正在运行的 run: {args.run_id}")
+    if args.mark_only:
+        iso, epoch = now_pair()
+        run["state"] = args.state
+        run["stopped_at"] = f"{iso} ({epoch})"
+        save_state(session, st)
+        append_log(
+            session / "SESSION_LOG.md",
+            f"- {iso} ({epoch}) · stop-run {args.run_id} --mark-only state={args.state} [key:stop-{args.run_id}]",
+        )
+        print(f"MARKED stage={args.run_id} state={args.state}")
+        return 0
+    pid = run.get("pid")
+    if not pid:
+        die(f"run '{args.run_id}' 未记录 pid（旧登记）；用 --mark-only 只改状态，或手工停")
+    if int(pid) in (os.getpid(), os.getppid()):
+        die("pid 指向当前进程，拒绝执行")
+    killed = False
+    try:
+        pgid = os.getpgid(int(pid))
+        os.killpg(pgid, signal.SIGTERM)
+        killed = True
+    except ProcessLookupError:
+        pass
+    except PermissionError as exc:
+        die(f"无权限停止 pid={pid}: {exc}")
+    iso, epoch = now_pair()
+    run["state"] = "stopped"
+    run["stopped_at"] = f"{iso} ({epoch})"
+    save_state(session, st)
+    append_log(
+        session / "SESSION_LOG.md",
+        f"- {iso} ({epoch}) · stop-run {args.run_id} · pid={pid} killed={int(killed)} [key:stop-{args.run_id}]",
+    )
+    print(f"STOPPED stage={args.run_id} pid={pid} killed={int(killed)}")
     return 0
 
 
@@ -1283,6 +1403,7 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--session", help="会话目录（省略时按 cwd 自动识别）")
 
     p = sub.add_parser("new", help="新建会话目录与四份文档")
+    p.add_argument("--date", default=None, help="回溯会话用：YYYY-MM-DD（目录名前缀）")
     p.add_argument("slug")
     p.add_argument("--root", default="./sessions")
     p.add_argument("--lite", action="store_true")
@@ -1298,6 +1419,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("status", help="四项检查（任一失败退出码 1）")
     add_common(p)
+    p.add_argument(
+        "--expect-stage",
+        default=None,
+        help="S3/S4 期允许“验收表未判定”（只允许第 4 项失败）→ 退出码 0 并打印 EXPECTED",
+    )
     p.set_defaults(func=cmd_status)
 
     p = sub.add_parser("note", help="追加一条日志记录")
@@ -1305,6 +1431,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--key", default=None)
     add_common(p)
     p.set_defaults(func=cmd_note)
+
+    p = sub.add_parser("run", help="detached 起一条命令并登记 pid（配合 stop-run 精确停）")
+    p.add_argument("--session", default=None)
+    p.add_argument("--stage", required=True, help="run id（也用于 state.runs[].id）")
+    p.add_argument("--cmd", required=True)
+    p.add_argument("--log", default="logs/run.log", help="相对 session 或绝对路径")
+    p.add_argument("--cwd", default=None)
+    p.add_argument("--marker", default=None)
+    p.add_argument("--interval", type=int, default=60)
+    p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("stop-run", help="按登记的 pid 精确停一个 run（不误杀自己）")
+    p.add_argument("run_id")
+    p.add_argument("--session", default=None)
+    p.add_argument("--mark-only", action="store_true", help="不杀进程，只把状态改成 --state")
+    p.add_argument("--state", default="stopped", choices=["stopped", "failed", "done", "stale"])
+    p.set_defaults(func=cmd_stop_run)
 
     p = sub.add_parser("ckpt", help="登记里程碑产物")
     p.add_argument("name")

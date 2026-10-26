@@ -303,6 +303,36 @@ row=$'notify\tbash x.sh\tlogs/n.log\tNOTIFY_DONE\t-\t0'
 IFS=$'\t' read -r pn pc pl pm pr pt <<< "$row"
 [[ "$pr" == "-" && "$pt" == "0" ]] && ok "空正则占位 - 解析正确" || bad "空正则占位" "regex=$pr tmo=$pt"
 
+echo "== R1. run / stop-run：按登记 pid 精确停，不误杀自身"
+S_RUN="$TMP/root/$(date +%F)-obs-dec"
+$CTL run --session "$S_RUN" --stage sleeper --cmd "sleep 120" --log logs/s.log >/dev/null 2>&1
+check "run 启动 → exit 0" 0 $?
+run_pid=$(python3 -c "import json,sys;d=json.load(open('$S_RUN/state.json'));print(next(r['pid'] for r in d['runs'] if r['id']=='sleeper'))")
+[[ -d /proc/$run_pid ]] && ok "run 进程存活（pid=$run_pid）" || bad "run 进程存活" "pid=$run_pid 不存在"
+$CTL stop-run sleeper --session "$S_RUN" >/dev/null 2>&1
+check "stop-run → exit 0" 0 $?
+sleep 1
+[[ -d /proc/$run_pid ]] && bad "stop-run 后进程应退出" "pid 仍存活" || ok "stop-run 后进程退出"
+st=$(python3 -c "import json;d=json.load(open('$S_RUN/state.json'));print(next(r['state'] for r in d['runs'] if r['id']=='sleeper'))")
+[[ "$st" == "stopped" ]] && ok "run 状态记为 stopped" || bad "run 状态记为 stopped" "state=$st"
+
+echo "== R2. status --expect-stage：S3/S4 期验收未判定属预期"
+$CTL new dec2 --root "$TMP/root" >/dev/null 2>&1
+S_DEC="$TMP/root/$(date +%F)-dec2"
+fill_plan "$S_DEC"; fill_acceptance "$S_DEC"
+$CTL state stage S4 --session "$S_DEC" >/dev/null 2>&1
+out=$($CTL status --session "$S_DEC" --expect-stage S4 2>&1)
+rc=$?
+[[ $rc -eq 0 ]] && ok "expect-stage S4 → exit 0" || bad "expect-stage S4 → exit 0" "rc=$rc :: $out"
+echo "$out" | grep -q "EXPECTED 3/4" && ok "输出 EXPECTED 3/4" || bad "输出 EXPECTED 3/4" "$out"
+
+echo "== R3. new --date：回溯会话目录名用历史日期"
+$CTL new backdated --root "$TMP/root" --date 2026-01-02 >/dev/null 2>&1
+check "new --date → exit 0" 0 $?
+[[ -d "$TMP/root/2026-01-02-backdated" ]] && ok "目录名为 2026-01-02-backdated" || bad "目录名" "未生成"
+sess=$(python3 -c "import json;print(json.load(open('$TMP/root/2026-01-02-backdated/state.json'))['session'])")
+[[ "$sess" == "2026-01-02-backdated" ]] && ok "state.session 与目录一致" || bad "state.session 与目录一致" "$sess"
+
 echo
 echo "==== 结果：PASS=$pass FAIL=$fail ===="
 [[ $fail -eq 0 ]]

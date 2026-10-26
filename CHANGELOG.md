@@ -14,6 +14,21 @@
   `name` 及仓库命名约定一致；`SKILL.md` / `README.md` 中 4 处路径引用同步更新。
 - 只导入 git 跟踪文件：`config/config.yaml`、`config/members.csv`、`config/state.json`、`output/`、
   `logs/` 不进仓库（技能自带的 `.gitignore` 继续生效）。
+## 0.1.6 — 2026-10-26
+
+补齐"起/停"与"回溯"三个缺口，并把产物校验改成与 cwd 无关（跨会话接手必需）。
+
+- **新增 `sessionctl run --stage <id> --cmd … --log …`**：`setsid` 起一条命令并把 `pid/cmd/log` 登记进
+  `state.runs`。**新增 `sessionctl stop-run <id>`**：按登记的 pid 精确停（含进程组），
+  避免 `pgrep -f … | xargs kill` 误杀执行者自己（本项目踩过两次）。
+  `stop-run --mark-only --state stopped|failed|done|stale` 用于没有 pid 的旧登记（例如被宿主杀掉的 watcher）。
+- **新增 `status --expect-stage S3|S4`**：这两期"验收表未判定"是预期状态，只允许第 4 项失败；
+  匹配时打印 `status: EXPECTED 3/4` 且退出码 0，不再把"计划已冻结、阈值待测"误报成故障。
+- **新增 `new --date YYYY-MM-DD`**：回溯/迁移历史会话时目录名用历史日期（配合已有的四份模板与 state）。
+- **修复 `status`/`verify` 的 cwd 依赖**：相对产物路径现在依次按 `session/`、仓库根、`cwd/` 解析，
+  在哪个目录执行结果都一样（此前换个目录就报"产物不存在"）。
+- 自测 86 → **96 条**（仓库口径；安装副本 95 条，差一条为跳过的 README 检查）（run/stop-run、expect-stage、new --date 各一组）。
+
 ## 0.1.5 — 2026-10-26
 
 补齐"agent 在环"模式（观察者唤醒 agent、由 agent 判读并决定推进或请示），修掉 pipeline 模板的两个真实 bug。
@@ -32,7 +47,7 @@
   （实测 `timeout: invalid time interval ' [0-9]+/[0-9]+ \\[|9000'`）。改为 **制表符分隔**，并在解析阶段对空字段快速失败。
 - **修复 `templates/pipeline.sh` bug B**：`wait "$child" 2>/dev/null || true` 会吞掉阶段命令的退出码，
   导致"终态标记已出现但命令失败"的阶段被标 done。改为 `wait` 后检查 `rc`，非零即 `STATUS=fail`。
-- 自测从 22 条扩到 **85 条**：新增 observe 的四种事件、写死总量被拒、`decision` 校验与 status 提示、pipeline 阶段表解析。
+- 自测从 22 条扩到 **86 条**：新增 observe 的四种事件、写死总量被拒、`decision` 校验与 status 提示、pipeline 阶段表解析。
 
 ## 0.1.4 — 2026-10-26
 
