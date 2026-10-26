@@ -1,0 +1,4 @@
+# long-task-session: 文档进 git，原始日志与大文件不进
+sessions/*/logs/
+sessions/*/artifacts/
+sessions/*/backup/

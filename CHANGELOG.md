@@ -11,3 +11,4 @@
 - `sessionctl`：new / list / status / note / ckpt / state / verify / resume / reconcile / close / doctor
 - 长任务三件套模板：幂等 launcher、可重挂 watcher（心跳写纯文本文件）、reconciler
 - 12 条抽象模式（`references/patterns.md`），不含任何真实项目数据
+- 自测 `tests/selftest.sh`：18 组断言 / 41 个检查点，全部通过
