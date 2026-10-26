@@ -14,6 +14,25 @@
   `name` 及仓库命名约定一致；`SKILL.md` / `README.md` 中 4 处路径引用同步更新。
 - 只导入 git 跟踪文件：`config/config.yaml`、`config/members.csv`、`config/state.json`、`output/`、
   `logs/` 不进仓库（技能自带的 `.gitignore` 继续生效）。
+## 0.1.5 — 2026-10-26
+
+补齐"agent 在环"模式（观察者唤醒 agent、由 agent 判读并决定推进或请示），修掉 pipeline 模板的两个真实 bug。
+
+- **新增 `sessionctl observe`**：观察者"闹钟"。睡到 `marker` / `checkpoint`（默认 40 分钟）/ `stale` / `timeout`
+  就退出并打印一行 `OBSERVE event=…`，**不判读、不写 state.json**；退出即把控制权交回 agent。
+  退出码：0=marker、3=checkpoint、5=stale、2=timeout、4=自检失败。
+  契约：agent 每次唤醒后先 `status`/`resume` 判读，再按 `next_action.decision` 推进或请示，**然后必须重新挂 observe**。
+- **新增 `state.next_action.decision`**（`agent` | `user`）：`status`/`resume` 会打印
+  `▶ 推进权：agent` 或 `⏸ 推进权在用户`；`decision=user` 时阶段完成后不自动进入下一阶段。
+- **`references/delegation.md` 新增 §7「两种判读模式」**：无人值守（子代理判读）vs agent 在环（主 agent 判读），
+  含选择规则与三条硬契约（重挂、观察者死亡是正常事件、执行体与观察者分离）。
+- **`SKILL.md` 新增「一句话边界」**：明确 Pull（能接上）与 Push（会继续）是两套机制，并写死
+  "自动执行到跑完并落盘为止，decision=user 的门仍等交互"。
+- **修复 `templates/pipeline.sh` bug A**：阶段表用 `|` 分隔时，进度正则里的 `\|` 会把字段切碎
+  （实测 `timeout: invalid time interval ' [0-9]+/[0-9]+ \\[|9000'`）。改为 **制表符分隔**，并在解析阶段对空字段快速失败。
+- **修复 `templates/pipeline.sh` bug B**：`wait "$child" 2>/dev/null || true` 会吞掉阶段命令的退出码，
+  导致"终态标记已出现但命令失败"的阶段被标 done。改为 `wait` 后检查 `rc`，非零即 `STATUS=fail`。
+- 自测从 22 条扩到 **85 条**：新增 observe 的四种事件、写死总量被拒、`decision` 校验与 status 提示、pipeline 阶段表解析。
 
 ## 0.1.4 — 2026-10-26
 

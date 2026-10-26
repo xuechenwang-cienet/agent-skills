@@ -31,6 +31,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from pathlib import Path
 
 SCHEMA = 1
@@ -619,6 +620,11 @@ def cmd_status(args) -> int:
         print(f"  ℹ️  {note}")
     if st:
         print(f"  ℹ️  {heartbeat_status(session, st)}")
+        decision = (st.get("next_action") or {}).get("decision") or "agent"
+        if decision == "user" and st.get("status") != "done":
+            print("  ⏸ 推进权在用户（next_action.decision=user）：判读后先请示，不要自动进入下一阶段")
+        else:
+            print(f"  ▶ 推进权：{decision}（判读后可直接推进，并重新挂 observe）")
     passed = sum(1 for _, ok, _ in checks if ok)
     print(f"status: {'PASS' if passed == 4 else 'FAIL'} {passed}/4")
     return 0 if passed == 4 else 1
@@ -726,6 +732,7 @@ STATE_WHITELIST_EXACT = {
     "next_action.cmd",
     "next_action.expect",
     "next_action.doc",
+    "next_action.decision",
     "blockers",
 }
 STATE_WHITELIST_PREFIX = ("gates.",)
@@ -748,6 +755,8 @@ def cmd_state(args) -> int:
         die(f"stage must be one of {STAGES}")
     if key == "status" and value not in STATUSES:
         die(f"status must be one of {STATUSES}")
+    if key == "next_action.decision" and value not in DECISIONS:
+        die(f"next_action.decision must be one of {DECISIONS}")
     if key == "blockers" and (
         not isinstance(value, list) or not all(isinstance(x, str) for x in value)
     ):
@@ -809,6 +818,7 @@ def cmd_resume(args) -> int:
             f"  产物校验：{'PASS' if ok_v else 'FAIL'}"
             + (f"（{'; '.join(errors)}）" if errors else "")
         )
+        print(f"  推进权：{na.get('decision') or 'agent'}（decision=user 时先请示再执行）")
         print(
             f"  下一条命令：{na.get('cmd') or '未设置（请先补 state.next_action.cmd）'}"
         )
@@ -1052,6 +1062,121 @@ def watcher_selftest(regex: str) -> tuple[bool, str]:
     return True, "ok"
 
 
+OBSERVE_EVENTS = ("marker", "checkpoint", "stale", "timeout")
+DECISIONS = ("agent", "user")
+TAIL_BYTES = 262144
+
+
+def _tail_text(path: Path) -> str:
+    """读文件末尾 TAIL_BYTES，避免把几 GB 的训练日志读进内存。"""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - TAIL_BYTES))
+            return f.read().decode("utf-8", "replace")
+    except FileNotFoundError:
+        return ""
+
+
+def _observe_selftest(regex: str) -> tuple[bool, str]:
+    """用临时日志做自检：标记命中退出 0；无标记但 checkpoint 到点退出 3。"""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        log = Path(td) / "t.log"
+        log.write_text("boot\n| 5/207 [00:10<01:00, 2.0s/it]\n", encoding="utf-8")
+        args = argparse.Namespace(
+            log=str(log), marker="TRAIN_DONE", regex=regex, interval=0.05,
+            checkpoint=0.3, window=5, stale_limit=0, exit_on_stale=False, run_id="selftest",
+        )
+        rc = cmd_observe(args, _return_only=True)
+        if rc != 3:
+            return False, f"无标记时应因 checkpoint 退出 3，实际 {rc}"
+        log.write_text(log.read_text(encoding="utf-8") + "TRAIN_DONE\n", encoding="utf-8")
+        args.checkpoint = 5
+        rc = cmd_observe(args, _return_only=True)
+        if rc != 0:
+            return False, f"标记出现时应退出 0，实际 {rc}"
+        if regex and not re.search(regex, _tail_text(log)):
+            return False, f"正则抓不到进度行：{regex}"
+    return True, "ok"
+
+
+def cmd_observe(args, _return_only: bool = False) -> int:
+    """观察者（闹钟）：睡到事件发生就退出，把控制权交回 agent。
+
+    与 watch 的区别：
+      * watch   —— 阶段内的监视器，写心跳，通常作为 detached pipeline 的子进程长期运行；
+      * observe —— 框架后台任务里的"闹钟"，**只退出、不判读、不写 state**；退出即唤醒 agent。
+    契约：agent 每次被唤醒后，先 `status`/`resume` 判读，再按 next_action 推进或请示用户，
+    然后**重新挂一个新的 observe**（观察者死亡是正常事件，状态在磁盘上）。
+    退出码：0=marker 3=checkpoint 5=stale 2=timeout 4=自检失败
+    """
+    if args.regex:
+        try:
+            re.compile(args.regex)
+        except re.error as exc:
+            die(f"invalid --regex: {exc}")
+        if not getattr(args, "no_selftest", False):
+            ok, detail = watcher_selftest(args.regex)
+            if not ok:
+                print(f"observe regex selftest: FAIL — {detail}", file=sys.stderr)
+                print(WATCHER_HINT, file=sys.stderr)
+                return 4
+    if getattr(args, "selftest", False):
+        ok, detail = _observe_selftest(args.regex or "")
+        if ok:
+            print("observe selftest: PASS（marker→0 / checkpoint→3 / 正则可抓进度）")
+            return 0
+        print(f"observe selftest: FAIL — {detail}", file=sys.stderr)
+        return 4
+    log = Path(args.log).expanduser()
+    if not log.is_absolute():
+        log = (Path.cwd() / log).resolve()
+    if not log.exists():
+        die(f"log not found: {log}")
+    if args.checkpoint <= 0 and args.window <= 0 and not args.marker:
+        die("observe 至少要有 marker / --checkpoint / --window 之一，否则会永不返回")
+
+    start = time.time()
+    last_progress = None
+    identical = 0
+    while True:
+        text = _tail_text(log)
+        progress = None
+        if args.regex:
+            found = list(re.finditer(args.regex, text))
+            if found:
+                progress = found[-1].group(0).strip()
+        elapsed = int(time.time() - start)
+        if args.marker and args.marker in text:
+            event = "marker"
+            rc = 0
+        elif progress is not None:
+            identical = identical + 1 if progress == last_progress else 0
+            last_progress = progress
+            if args.exit_on_stale and args.stale_limit and identical >= args.stale_limit:
+                event, rc = "stale", 5
+            else:
+                event = rc = None
+        else:
+            event = rc = None
+        if event is None and args.checkpoint and elapsed >= args.checkpoint:
+            event, rc = "checkpoint", 3
+        if event is None and args.window and elapsed >= args.window:
+            event, rc = "timeout", 2
+        if event:
+            if not _return_only:
+                print(
+                    f'OBSERVE event={event} session={getattr(args, "session", None) or "-"} '
+                    f'run={args.run_id or "-"} elapsed={elapsed}s marker={int(bool(args.marker and args.marker in text))} '
+                    f'progress="{progress or "-"}"'
+                )
+            return rc
+        time.sleep(args.interval)
+
+
 def cmd_watch(args) -> int:
     """包装 watcher 模板：先自检，再托管；退出码透传（0/2/3/5）。"""
     session = resolve_session(args)
@@ -1241,6 +1366,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--selftest-only", action="store_true", help="只跑自检，不启动监视")
     add_common(p)
     p.set_defaults(func=cmd_watch)
+
+    p = sub.add_parser("observe", help="观察者闹钟：睡到事件就退出并唤醒 agent（不判读）")
+    p.add_argument("--session", default=None)
+    p.add_argument("--log", required=False, default="")
+    p.add_argument("--marker", default="", help="终态标记字符串（唯一、非百分比）")
+    p.add_argument("--regex", default="", help="进度正则；只匹配形状，禁止写死总量")
+    p.add_argument("--interval", type=float, default=30.0)
+    p.add_argument("--checkpoint", type=float, default=2400.0, help="每 N 秒醒一次（默认 40 分钟）")
+    p.add_argument("--window", type=float, default=14400.0, help="总窗口（默认 4h），到点退出 2")
+    p.add_argument("--stale-limit", type=int, default=0, help=">0 且配 --exit-on-stale 时，进度不变 N 次退出 5")
+    p.add_argument("--exit-on-stale", action="store_true")
+    p.add_argument("--run-id", default=None)
+    p.add_argument("--selftest", action="store_true")
+    p.add_argument("--no-selftest", action="store_true")
+    p.set_defaults(func=cmd_observe)
 
     p = sub.add_parser("doctor", help="检查依赖工具")
     p.set_defaults(func=cmd_doctor)

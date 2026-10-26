@@ -4,6 +4,8 @@ description: >
   把预计超过 40 分钟的长任务从想法推进到可验收结果：六阶段流程（对账→定界量噪→方案筛选→夯实→执行→验收沉淀）、
   四份会话文档、机器状态 state.json、长任务三件套（幂等 launcher / 可重挂 watcher / reconciler）。
   第一目标是"任何新上下文都能零依赖接手"，不依赖 harness 的通知或后台任务存活。
+  两种执行形态：无人值守（pipeline 串阶段 + 子代理判读）与 agent 在环（sessionctl observe 到点唤醒 agent，
+  按 state.next_action.decision 自动推进或请示用户）。
   触发：长任务、跑一晚上、多阶段任务、session plan、session log、验收红线、轮训器、watcher、断点续跑、
   交叉会话接手、这个实验怎么排、先量再改。
   Trigger: long task, overnight run, multi-stage plan, session plan, session log, acceptance gates,
@@ -15,6 +17,22 @@ description: >
 
 长任务的失败很少是"算不出来"，多半是**中断后没人能接手**、**一次改两个变量说不清归因**、
 **指标涨了真实质量却降了**。本技能把这几件事变成流程与文件。
+
+## 一句话边界（先读这条）
+
+**本技能保证"能接上"（Pull），并通过 `pipeline.sh` / `sessionctl observe` 保证"会继续"（Push）——但两者机制不同：**
+
+| 你要的 | 机制 | 谁来做 |
+|---|---|---|
+| 断了能接手 | 四份文档 + `state.json` + `resume` | 任意新上下文 |
+| 阶段跑完自动往下走 | `pipeline.sh`（各阶段串成一条 detached 管道） | 宿主机长进程 |
+| **到了检查点，agent 醒来判读并决定继续/请示** | `sessionctl observe`（退出即唤醒）+ `state.next_action.decision` | agent（框架后台任务，可重挂） |
+| 有人拍板才继续 | `decision=user` | 用户 |
+
+两条不可违反的边界：
+
+1. **执行体与观察者必须分开住**：执行体 `setsid nohup`（跨重启存活），观察者放框架后台任务（它被杀不丢状态，重挂幂等）。反过来做 = 重启时任务一起断。
+2. **"自动执行"到"跑完并落盘"为止**；`decision=user` 的门和口径变更仍等下一次交互。这不是缺陷，是设计选择。
 
 ## 何时用
 
@@ -112,6 +130,12 @@ python3 <skill>/scripts/sessionctl.py list --paths
 python3 <skill>/scripts/sessionctl.py ckpt train-done --artifact artifacts/model/
 python3 <skill>/scripts/sessionctl.py note --key fix-1 "把 X 改成 Y，因为 Z"
 
+# 3.5) 需要“到点醒来判读”时：挂 observe（框架后台任务），退出即唤醒 agent
+python3 <skill>/scripts/sessionctl.py observe --session ./sessions/<slug> \
+    --log logs/train.log --marker train_runtime --regex '\| [0-9]+/[0-9]+ \[' --checkpoint 2400
+#      判读后按 next_action.decision 决定自动推进还是请示：
+python3 <skill>/scripts/sessionctl.py state next_action.decision user
+
 # 4) 接手时（新上下文）；产物校验失败时退出码为 1（文本仍会打印）
 python3 <skill>/scripts/sessionctl.py resume --prompt
 
@@ -120,6 +144,10 @@ python3 <skill>/scripts/sessionctl.py close --backup
 ```
 
 `status` 打印四行检查表，**任一项失败退出码为 1**，最后一行是 `status: PASS|FAIL x/4`。
+
+`watch` 与 `observe` 的分工：`watch` 是**阶段内的监视器**（写心跳、通常作为 detached pipeline 的子进程）；
+`observe` 是**闹钟**（不写 state、睡到 marker/checkpoint/stale/timeout 就退出，把控制权交回 agent）。
+两者都强制正则"只匹配形状"：写死总量（如 `[0-9]+/172`）会在上岗自检被拒（退出码 4）。
 
 ## 文档职责与 git 归属
 

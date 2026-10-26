@@ -264,6 +264,45 @@ SESSION_DIR="$TMP/t/w4" LOG="$TMP/t/w4/s.log" TERMINAL_MARKER=nope \
   timeout 15 bash "$HERE/templates/watcher.sh" >/dev/null 2>&1
 check "失速达阈值 → exit 5" 5 $?
 
+echo "== O1. observe 自检（marker→0 / checkpoint→3）"
+$CTL observe --selftest >/dev/null 2>&1
+check "observe --selftest → exit 0" 0 $?
+
+echo "== O2. observe：标记命中 → exit 0 并打印事件行"
+printf 'boot\nTRAIN_DONE\n' > "$TMP/obs.log"
+out=$($CTL observe --log "$TMP/obs.log" --marker TRAIN_DONE --checkpoint 30 2>&1)
+check "marker → exit 0" 0 $?
+echo "$out" | grep -q 'OBSERVE event=marker' && ok "输出含 OBSERVE event=marker" || bad "输出含 OBSERVE event=marker" "$out"
+
+echo "== O3. observe：无标记、checkpoint 到点 → exit 3"
+$CTL observe --log "$TMP/obs.log" --marker NEVER --checkpoint 1 --interval 0.2 >/dev/null 2>&1
+check "checkpoint → exit 3" 3 $?
+
+echo "== O4. observe：写死总步数的正则必须被拒（exit 4）"
+$CTL observe --log "$TMP/obs.log" --marker NEVER --checkpoint 5 --regex '\| [0-9]+/172 \[' >/dev/null 2>&1
+check "写死总量 → exit 4" 4 $?
+
+echo "== O5. next_action.decision 白名单与校验"
+$CTL new obs-dec --root "$TMP/root" >/dev/null 2>&1
+DEC_SESSION="$TMP/root/$(date +%F)-obs-dec"
+$CTL state next_action.decision user --session "$DEC_SESSION" >/dev/null 2>&1
+check "decision=user 可写" 0 $?
+$CTL state next_action.decision bogus --session "$DEC_SESSION" >/dev/null 2>&1
+[[ $? -ne 0 ]] && ok "decision 非法值被拒" || bad "decision 非法值被拒" "非法值竟然通过"
+out=$($CTL status --session "$DEC_SESSION" 2>&1)
+echo "$out" | grep -q "推进权在用户" && ok "status 打印 ⏸ 推进权在用户" || bad "status 打印 ⏸ 推进权在用户" "$out"
+
+echo "== P1. pipeline 阶段表：正则里的 | 不会切碎字段"
+row=$(bash -c 'eval "$(sed -n "/^STAGES=(/,/^)/p" "$1")"; echo "${STAGES[0]}"' _ "$HERE/templates/pipeline.sh")
+IFS=$'\t' read -r pn pc pl pm pr pt <<< "$row"
+[[ "$pn" == "train" && "$pm" == "train_runtime" && "$pr" == '\| [0-9]+/[0-9]+ \[' && "$pt" == "9000" ]] \
+  && ok "阶段表 6 字段解析正确（regex 保留 |）" || bad "阶段表解析" "name=$pn marker=$pm regex=$pr tmo=$pt"
+
+echo "== P2. pipeline 阶段表：空正则用 - 占位，后面字段不左移"
+row=$'notify\tbash x.sh\tlogs/n.log\tNOTIFY_DONE\t-\t0'
+IFS=$'\t' read -r pn pc pl pm pr pt <<< "$row"
+[[ "$pr" == "-" && "$pt" == "0" ]] && ok "空正则占位 - 解析正确" || bad "空正则占位" "regex=$pr tmo=$pt"
+
 echo
 echo "==== 结果：PASS=$pass FAIL=$fail ===="
 [[ $fail -eq 0 ]]

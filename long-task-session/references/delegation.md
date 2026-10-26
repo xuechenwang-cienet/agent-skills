@@ -87,3 +87,57 @@ tail -1 sessions/<slug>/logs/pipeline.out
 2. 让子代理"盯着直到结束"（会提前返回，且会话回收即失联）。
 3. 把心跳内容当作主会话的必读信息（心跳是给机器和排障看的，不是给上下文看的）。
 4. 通知器里做判读（判读要读很多文件，正好是最费上下文的部分，应隔离在子代理里）。
+---
+
+## 7. 两种判读模式（agent 在环 vs 子代理）
+
+前六节是"无人值守"形态：判读交给子代理，主会话只看一行。还有另一种同样合法、且更适合**需要人拍板**的门：
+**agent 在环**——观察者唤醒主 agent，由它判读、推进，或停下来问用户。
+
+| 形态 | 谁判读 | 适合 | 不适合 | 原语 |
+|---|---|---|---|---|
+| 无人值守 | 子代理 / 管道内 `VERDICT_CMD` | 纯指标判定（阈值已预注册） | 需要业务判断、口径变更、成本决策 | `pipeline.sh` + 单行通知器 |
+| **agent 在环** | 主 agent | 决策点、要请示用户的门、计划偏离处置 | 长跑期间每 40 分钟的例行巡检（浪费上下文） | **`sessionctl observe`** + `state.next_action.decision` |
+
+### 7.1 observe 契约（agent 在环模式）
+
+`sessionctl observe` 是"闹钟"：**睡到事件发生就退出，把控制权交回 agent**。它不判读、不写 `state.json`。
+
+```bash
+# 作为框架后台任务启动（它的“退出”就是唤醒 agent 的事件）
+sessionctl observe --session sessions/<slug> \
+  --log logs/train.log --marker train_runtime \
+  --regex '\| [0-9]+/[0-9]+ \[' \
+  --checkpoint 2400 --window 14400
+```
+
+| 事件 | 退出码 | 含义 | agent 该做什么 |
+|---|---|---|---|
+| `marker` | 0 | 终态标记出现 | 判读产物 → 推进下一阶段 |
+| `checkpoint` | 3 | 到点巡检（默认 40 分钟） | 看进度是否正常；正常则**重新挂 observe** |
+| `stale` | 5 | 进度连续 N 次不变（需 `--stale-limit N --exit-on-stale`） | 排障：区分“作业卡住”与“watcher 心跳断” |
+| `timeout` | 2 | 总窗口到点 | 决定继续等待 / 请示用户 |
+
+**三条硬契约**：
+
+1. **每次唤醒后必须重新挂 observe**。observe 是一次性的；不重挂就等于关掉了闹钟。
+2. **observe 死亡是正常事件**，不是故障：状态在磁盘（`state.json` + 心跳 + 产物哈希），重挂幂等。
+3. **执行体绝不能和 observe 住在一起**：执行体用 `setsid nohup`（跨重启存活），observe 放框架后台任务（它被杀不丢东西）。反过来做会导致“重启 = 长任务也断了”。
+
+### 7.2 推进权：`state.next_action.decision`
+
+```bash
+sessionctl state next_action.decision user    # 或 agent（默认）
+```
+
+`status` / `resume` 会打印 `▶ 推进权：agent` 或 `⏸ 推进权在用户`。规则：
+
+| decision | 阶段完成后 | 例 |
+|---|---|---|
+| `agent` | 判读通过即自动进入下一阶段，并重挂 observe | G1–G9 这类有预注册阈值的指标门 |
+| `user` | 判读后**停下请示**，不自动进入下一阶段 | 换评测口径、追加 2 小时评估、替换交付版 |
+
+### 7.3 选择规则（一句话）
+
+> 阈值已预注册且失败可以直接回退 → 无人值守 + 子代理判读；
+> 一旦失败需要有人决定"要不要继续花钱/改口径/换交付" → agent 在环 + `decision=user`。
