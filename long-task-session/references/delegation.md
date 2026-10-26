@@ -78,6 +78,8 @@ tail -1 sessions/<slug>/logs/pipeline.out
 | 心跳停滞 | `status` 会出现 `⚠ 最近一次失速`；`sessionctl watch` 的自检与 `STALE_LIMIT` 是两层防线 |
 | 管道中途失败 | 最后一行 `status=fail failed_at=<stage>`；`.stage-*.done` 标记保证重跑从断点继续 |
 | 子代理提前返回 | 以磁盘状态为准：重开子代理只做判读，不重新等待 |
+| 宿主升级/重启 opencode | 所有由它托管的后台 shell 被杀；`setsid` 管道不受影响 → 重启后重挂 watcher，读心跳 mtime 判断断档 |
+| 宿主空闲驱逐（opencode ≤2.0.x，60 分钟无会话活动） | 同上；升级到 ≥2.1.3 或改用 `setsid` 长进程 |
 
 ## 6. 反模式
 
