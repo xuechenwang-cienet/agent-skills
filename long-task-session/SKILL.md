@@ -66,10 +66,10 @@ description: >
 | 组件 | 要求 |
 |---|---|
 | launcher | 幂等；前置自检（数据/配置/依赖/端口/设备）；失败立即非零退出；日志路径固定 |
-| watcher | 心跳 ≤60s 写 `logs/heartbeat.log`（纯文本）；窗口 ≤2h 可重挂；退出条件绑定**真实终态标记** |
+| watcher | 心跳 ≤60s 写 `logs/heartbeat.log`（纯文本）；窗口 ≤2h 可重挂；退出条件绑定**真实终态标记**；**上岗前必须过 `sessionctl watch` 自检**（夹具日志验证正则真能抓到进度） |
 | reconciler | 会话一接手就跑：`state.json` + 心跳 mtime + 产物哈希，判 running / stale / done |
 
-五条反模式（完整 15 条：12 条主模式 + 3 条变体，见 `references/patterns.md`）：
+五条反模式（完整 16 条：13 条主模式 + 3 条变体，见 `references/patterns.md`）：
 
 1. 用输出里的百分比判断终态（别的阶段会打印同名百分比）。
 2. 把"进程还活着"当成任务健康。
@@ -78,6 +78,23 @@ description: >
 5. 用 `pkill -f "<含自身命令行的字符串>"`（会杀掉执行命令的 shell）。
 
 规范与模板见 `references/long-running.md`、`templates/launcher.sh`、`templates/watcher.sh`。
+
+### 托管监控（省上下文）
+
+多阶段任务不要每阶段手写 watcher，也不要让子代理"盯着直到结束"（会提前返回）：
+
+```bash
+# 一条命令托管整条链；自检不过会拒绝启动（exit 4）
+python3 sessionctl.py watch --session sessions/<slug> --log logs/train.log \
+    --marker train_runtime --regex '\| [0-9]+/[0-9]+ \[' --pid "$PID"
+
+# 只跑自检（10 秒内验证正则/终态是否可用）
+python3 sessionctl.py watch --selftest-only --log logs/train.log --marker train_runtime \
+    --regex '\| [0-9]+/[0-9]+ \['
+```
+
+- 多阶段用 `templates/pipeline.sh`：脱离会话、幂等、失败短路、**stdout 只有一行结论**；
+- 判读交给子代理（只回一行 VERDICT），细节见 `references/delegation.md`。
 
 ## 快速开始
 
@@ -127,6 +144,7 @@ opencode 的 plan 模式只允许写 `~/.opencode/plan`。规则：**草稿写�
 |---|---|
 | `references/stages.md` | 六阶段逐条：输入/动作/产出/退出条件/常见错误 |
 | `references/documents.md` | 四份文档的固定小节、`state.json` schema、记录格式、无记忆读者写作要求 |
-| `references/long-running.md` | launcher/watcher/reconciler 规范、40 分钟检查点、反模式 |
+| `references/long-running.md` | launcher/watcher/reconciler 规范、watcher 自检与失速检测、40 分钟检查点、反模式 |
 | `references/metrics.md` | 口径复现、噪声带、单变量表、预注册、防过拟合护栏 |
-| `references/patterns.md` | 15 条抽象模式（12 主 + 3 变体；症状/为什么错/对策），不含真实项目数据 |
+| `references/delegation.md` | 托管监控：pipeline + watcher 自检 + 子代理判读 + 单行通知契约 |
+| `references/patterns.md` | 16 条抽象模式（13 主 + 3 变体；症状/为什么错/对策），不含真实项目数据 |

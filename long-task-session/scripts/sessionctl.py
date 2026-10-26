@@ -573,7 +573,19 @@ def heartbeat_status(session: Path, st: dict) -> str:
             interval = int(r["heartbeat_interval_s"])
             break
     verdict = "running" if age <= 3 * interval else "stale"
-    return f"心跳：{age}s 前（间隔 {interval}s）→ {verdict}"
+    msg = f"心跳：{age}s 前（间隔 {interval}s）→ {verdict}"
+    # 假推进体检：声明了进度正则、但最近一条心跳 progress=- → 正则没抓到任何东西
+    declared = any(r.get("progress_regex") for r in st.get("runs") or [])
+    if declared:
+        try:
+            last = hb.read_text(encoding="utf-8").strip().splitlines()[-1]
+        except Exception:
+            last = ""
+        if "progress=-" in last:
+            msg += "  ⚠ 最近一次 progress=-（声明了进度正则却抓不到：检查是否写死了总量，或日志格式变了）"
+        if "stale_progress" in last:
+            msg += "  ⚠ 最近一次失速（stale_progress）"
+    return msg
 
 
 def cmd_status(args) -> int:
@@ -679,6 +691,7 @@ def cmd_ckpt(args) -> int:
             "started_at": f"{iso} ({epoch})",
             "heartbeat_interval_s": args.heartbeat_interval,
             "terminal_marker": args.terminal_marker,
+            "progress_regex": getattr(args, "progress_regex", None),
             "state": args.state,
             "artifact": rel,
             "sha256": sha,
@@ -982,6 +995,134 @@ def cmd_close(args) -> int:
     return 0
 
 
+WATCHER_HINT = """检查这几项：
+  1) PROGRESS_REGEX 是否写死了总量（例如 \\| [0-9]+/172 \\[）—— 不同批次步数不同，必须只匹配形状
+  2) 日志里的进度行格式是否与正则一致（tqdm 的进度条用 \\r 分隔，本工具已做 tr '\\r' '\\n'）
+  3) 若该阶段本来就没有进度输出，去掉 --regex（只保留终态标记）"""
+
+
+def watcher_selftest(regex: str) -> tuple[bool, str]:
+    """用两份夹具日志验证 watcher 模板"真的能看见"进度与终态。
+
+    夹具刻意使用与具体批次无关的通用进度行（`| 5/207 [...]`）：任何写死总量的正则都会在
+    这里失败，而不是在真实长任务里安静地写 10 分钟 `progress=-`。
+    """
+    tpl = TEMPLATE_DIR / "watcher.sh"
+    if not tpl.exists():
+        return False, f"模板缺失: {tpl}"
+    base = Path("/tmp/opencode") if Path("/tmp/opencode").is_dir() else Path(tempfile.gettempdir())
+    prog = "| 5/207 [00:12<01:30:00, 40.5s/it]"
+    problems: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="lts-watch-selftest.", dir=str(base)) as td:
+        root = Path(td)
+        want_progress = bool(regex)
+        for tag, marker_line, want_code in (
+            ("a", None, 3),          # 无终态 -> 窗口到期，但进度必须抓到
+            ("b", "TERMINAL_OK", 0),  # 有终态 -> 立刻退出 0
+        ):
+            d = root / tag
+            (d / "logs").mkdir(parents=True)
+            log = d / "stage.log"
+            log.write_text("stage started\n" + prog + "\n" + ((marker_line + "\n") if marker_line else ""), encoding="utf-8")
+            env = dict(os.environ)
+            env.update(
+                SESSION_DIR=str(d),
+                LOG=str(log),
+                TERMINAL_MARKER="TERMINAL_OK",
+                PROGRESS_REGEX=regex,
+                INTERVAL="1",
+                MAX_WINDOW="1",
+                RUN_ID="selftest",
+            )
+            try:
+                r = subprocess.run(["bash", str(tpl)], env=env, capture_output=True, text=True, timeout=20)
+            except subprocess.TimeoutExpired:
+                problems.append(f"夹具{tag} 超时（watcher 没退出）")
+                continue
+            if r.returncode != want_code:
+                problems.append(f"夹具{tag} 退出码 {r.returncode}（期望 {want_code}）")
+            hb = d / "logs" / "heartbeat.log"
+            text = hb.read_text(encoding="utf-8") if hb.exists() else ""
+            if not text.strip():
+                problems.append(f"夹具{tag} 没有写出心跳")
+            elif want_progress and tag == "a" and "5/207" not in text:
+                problems.append(f"夹具{tag} 进度未被抓取（progress 恒为 -）：正则与日志格式不匹配或被写死")
+    if problems:
+        return False, "; ".join(problems)
+    return True, "ok"
+
+
+def cmd_watch(args) -> int:
+    """包装 watcher 模板：先自检，再托管；退出码透传（0/2/3/5）。"""
+    session = resolve_session(args)
+    log = Path(args.log).expanduser()
+    if not log.is_absolute():
+        log = (Path.cwd() / log).resolve()
+    if not log.exists():
+        die(f"log not found: {log}")
+
+    if not args.selftest_only and not args.no_selftest:
+        ok, detail = watcher_selftest(args.regex or "")
+        if not ok:
+            print("watcher selftest: FAIL", file=sys.stderr)
+            print(f"  {detail}", file=sys.stderr)
+            print(WATCHER_HINT, file=sys.stderr)
+            return 4
+        print("watcher selftest: PASS（夹具 | 5/207 [...] 能被正则抓到，终态路径可退出）")
+    elif args.selftest_only:
+        ok, detail = watcher_selftest(args.regex or "")
+        if ok:
+            print("watcher selftest: PASS")
+            return 0
+        print(f"watcher selftest: FAIL — {detail}", file=sys.stderr)
+        print(WATCHER_HINT, file=sys.stderr)
+        return 4
+
+    run_id = args.run_id or log.stem
+    st = load_state(session)
+    if not any(r.get("id") == run_id for r in st.get("runs") or []):
+        iso, epoch = now_pair()
+        st.setdefault("runs", []).append(
+            {
+                "id": run_id,
+                "kind": "watch",
+                "started_at": f"{iso} ({epoch})",
+                "heartbeat_interval_s": args.interval,
+                "terminal_marker": args.marker,
+                "progress_regex": args.regex,
+                "state": "running",
+                "artifact": None,
+                "sha256": None,
+                "sha256_source": None,
+            }
+        )
+        save_state(session, st)
+
+    tpl = TEMPLATE_DIR / "watcher.sh"
+    env = dict(os.environ)
+    env.update(
+        SESSION_DIR=str(session),
+        LOG=str(log),
+        TERMINAL_MARKER=args.marker,
+        PROGRESS_REGEX=args.regex or "",
+        INTERVAL=str(args.interval),
+        MAX_WINDOW=str(args.window),
+        STALE_LIMIT=str(args.stale_limit),
+        FAIL_ON_STALE=str(args.fail_on_stale),
+        RUN_ID=run_id,
+    )
+    if args.pid:
+        env["PID"] = str(args.pid)
+    rc = subprocess.call(["bash", str(tpl)], env=env)
+
+    st = load_state(session)
+    for r in st.get("runs") or []:
+        if r.get("id") == run_id and r.get("state") == "running":
+            r["state"] = "done" if rc == 0 else ("stale" if rc in (2, 5) else "failed")
+    save_state(session, st)
+    return rc
+
+
 def cmd_doctor(args) -> int:
     print(f"python3 : {sys.version.split()[0]}")
     for tool in ("tar", "zstd", "rsync", "git"):
@@ -1048,6 +1189,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--long", action="store_true")
     p.add_argument("--state", default="done", choices=RUN_STATES)
     p.add_argument("--terminal-marker", default=None)
+    p.add_argument("--progress-regex", default=None, help="进度抓取正则（给 status 做假推进体检）")
     p.add_argument("--heartbeat-interval", type=int, default=60)
     add_common(p)
     p.set_defaults(func=cmd_ckpt)
@@ -1084,6 +1226,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true", help="跳过未通过的检查并归档（写入日志）")
     add_common(p)
     p.set_defaults(func=cmd_close)
+
+    p = sub.add_parser("watch", help="自检并托管 watcher 模板（推荐替代手写 watcher）")
+    p.add_argument("--log", required=True, help="被监视的日志文件")
+    p.add_argument("--marker", required=True, help="终态标记字符串（唯一、非百分比）")
+    p.add_argument("--regex", default=None, help="进度抓取正则；只匹配形状，禁止写死总量")
+    p.add_argument("--interval", type=int, default=60)
+    p.add_argument("--window", type=int, default=7200)
+    p.add_argument("--stale-limit", type=int, default=3)
+    p.add_argument("--fail-on-stale", type=int, default=0, help=">0 时失速达到该次数以退出码 5 结束")
+    p.add_argument("--pid", type=int, default=None)
+    p.add_argument("--run-id", default=None)
+    p.add_argument("--no-selftest", action="store_true", help="跳过上岗自检（仅排查用）")
+    p.add_argument("--selftest-only", action="store_true", help="只跑自检，不启动监视")
+    add_common(p)
+    p.set_defaults(func=cmd_watch)
 
     p = sub.add_parser("doctor", help="检查依赖工具")
     p.set_defaults(func=cmd_doctor)

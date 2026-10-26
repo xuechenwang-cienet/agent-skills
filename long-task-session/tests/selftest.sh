@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sessionctl 自测（18 条）。用法：bash tests/selftest.sh
+# sessionctl 自测（22 条）。用法：bash tests/selftest.sh
 # 所有产物落在 $TMP，不污染技能仓库，也不依赖真实项目数据。
 set -uo pipefail
 
@@ -233,6 +233,36 @@ n_paths=$($CTL list --root "$TMP/t" --paths | wc -l)
 n_dirs=$(for d in "$TMP/t"/*/; do [[ -f "$d/state.json" ]] && echo x; done | wc -l)
 [[ "$n_paths" == "$n_dirs" ]] && ok "list --paths 行数=会话数（$n_paths）" || bad "list --paths 行数=会话数" "$n_paths vs $n_dirs"
 $CTL list --root "$TMP/t" --paths | grep -qv "^/" && bad "list --paths 全为绝对路径" || ok "list --paths 全为绝对路径"
+
+echo "== W1. watch 上岗自检：通用进度正则通过"
+mkdir -p "$TMP/t/w/logs"
+printf 'x\n| 5/207 [00:12<01:30:00, 40.5s/it]\n' > "$TMP/t/w/s.log"
+$CTL watch --selftest-only --session "$TMP/t/w" --log "$TMP/t/w/s.log" \
+  --marker train_runtime --regex '\| [0-9]+/[0-9]+ \[' >/dev/null 2>&1
+check "通用正则 → 自检 exit 0" 0 $?
+
+echo "== W2. watch 上岗自检：写死总步数必须被拒"
+out=$($CTL watch --selftest-only --session "$TMP/t/w" --log "$TMP/t/w/s.log" \
+  --marker train_runtime --regex '\| [0-9]+/172 \[' 2>&1); rc=$?
+check "写死 /172 → 自检 exit 4" 4 $rc
+echo "$out" | grep -q "写死" && ok "错误信息指出'写死总量'" || bad "错误信息指出'写死总量'"
+
+echo "== W3. 失速检测写入心跳"
+mkdir -p "$TMP/t/w3/logs"
+printf 'x\n| 5/207 [00:12<01:30:00, 40.5s/it]\n' > "$TMP/t/w3/s.log"
+SESSION_DIR="$TMP/t/w3" LOG="$TMP/t/w3/s.log" TERMINAL_MARKER=nope \
+  PROGRESS_REGEX='\| [0-9]+/[0-9]+ \[' INTERVAL=1 MAX_WINDOW=4 STALE_LIMIT=2 \
+  timeout 10 bash "$HERE/templates/watcher.sh" >/dev/null 2>&1
+grep -q "stale_progress" "$TMP/t/w3/logs/heartbeat.log" 2>/dev/null \
+  && ok "连续相同进度 → note=stale_progress" || bad "连续相同进度 → note=stale_progress"
+
+echo "== W4. FAIL_ON_STALE 退出码 5"
+mkdir -p "$TMP/t/w4/logs"
+printf 'x\n| 5/207 [00:12<01:30:00, 40.5s/it]\n' > "$TMP/t/w4/s.log"
+SESSION_DIR="$TMP/t/w4" LOG="$TMP/t/w4/s.log" TERMINAL_MARKER=nope \
+  PROGRESS_REGEX='\| [0-9]+/[0-9]+ \[' INTERVAL=1 MAX_WINDOW=30 STALE_LIMIT=2 FAIL_ON_STALE=3 \
+  timeout 15 bash "$HERE/templates/watcher.sh" >/dev/null 2>&1
+check "失速达阈值 → exit 5" 5 $?
 
 echo
 echo "==== 结果：PASS=$pass FAIL=$fail ===="

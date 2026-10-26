@@ -2,6 +2,26 @@
 
 `npx skills update` 会整体覆盖安装目录，本文件用于说明每个版本改了什么。
 
+## 0.1.3 — 2026-10-26
+
+监视环节的"自证可用" + 上下文降载。向后兼容（不改 schema、既有会话无需迁移）。
+
+- **`sessionctl watch`（新）**：包装 watcher 模板；启动前用两份夹具日志做**上岗自检**——
+  正则必须能抓到与批次无关的 `| 5/207 [...]`，写死总量（如 `/172`）会直接拒绝启动（exit 4）
+  并给出定向提示。`--selftest-only` 可单独跑（<10 秒）。
+- **`templates/watcher.sh`**：新增失速检测 `STALE_LIMIT`（默认 3）→ 心跳追加
+  `note=stale_progress`；`FAIL_ON_STALE=N` 达到阈值以**退出码 5** 结束；头注释明确
+  "总步数/总量不要写死"。
+- **`sessionctl status`**：心跳行新增"假推进体检"——声明了 `progress_regex` 但最近一次
+  `progress=-` 时给出 ⚠ 提示。
+- **`sessionctl ckpt --progress-regex`**：把进度正则记进 `runs[]`，供 status 体检。
+- **`templates/pipeline.sh`（新）**：多阶段管道模板（幂等 done 标记、失败短路、单行通知契约）。
+- **`references/delegation.md`（新）**：托管监控——等待交给管道、判读交给子代理、单行通知契约、
+  子代理 prompt 模板与兜底规则。
+- **patterns.md**：新增第 16 条"监视器写死总量"（按 16 条同步计数）；
+  `long-running.md` / `SKILL.md` 补自检与失速规则。
+- 自测：新增 W1–W4（自检通过 / 写死被拒 / 失速记录 / 退出码 5）→ 76 个检查点全绿。
+
 ## 0.1.2 — 2026-10-26
 
 两处可用性改进，向后兼容（不改 schema、不改退出码语义）。
