@@ -50,7 +50,8 @@ bash long-task-session/tests/selftest.sh
 最近一次结果（2026-10-26，Linux，Python 3.13）：
 
 ```
-==== 结果：PASS=67 FAIL=0 ====
+==== 结果：PASS=67 FAIL=0 ====      # 仓库内运行
+==== 结果：PASS=66 FAIL=0 ====      # 安装副本运行（无仓库根 README，跳过该条）
 ```
 
 ## 发布彩排记录
