@@ -136,8 +136,12 @@ TZ=UTC $CTL new tzcase --root "$TMP/tz" >/dev/null 2>&1; check "TZ=UTC 下 new �
 grep -q "+00:00" "$TMP/tz/$(ls "$TMP/tz" | head -1)/state.json" && ok "时间戳带 +00:00 偏移" || bad "时间戳带 +00:00 偏移"
 
 echo "== N6. README 安装命令可执行性（owner 拼写）"
-grep -q "xuechenwang-cienet/agent-skills" "$HERE/../README.md" && ok "README owner 正确" || bad "README owner 正确"
-grep -q "xuechen.xin" "$HERE/../README.md" && bad "README 无错误 owner" || ok "README 无错误 owner"
+if [[ -f "$HERE/../README.md" ]]; then
+  grep -q "xuechenwang-cienet/agent-skills" "$HERE/../README.md" && ok "README owner 正确" || bad "README owner 正确"
+  grep -q "xuechen.xin" "$HERE/../README.md" && bad "README 无错误 owner" || ok "README 无错误 owner"
+else
+  ok "README 检查跳过（安装副本无仓库根 README）"
+fi
 
 echo "== T1. 目录产物不崩（B1）"
 $CTL new d1 --root "$TMP/t" >/dev/null 2>&1; s1=$(ls -td "$TMP/t"/*-d1 | head -1)
