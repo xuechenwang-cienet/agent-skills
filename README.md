@@ -19,10 +19,11 @@ npx -y skills@latest add xuechenwang-cienet/agent-skills -g -s long-task-session
 npx -y skills@latest update -g
 ```
 
-GitHub 走代理时给 `npx` 加环境变量：
+GitHub 走代理时给 `npx` 加环境变量（本机 mihomo 监听在 LAN 地址上，不是 127.0.0.1）：
 
 ```bash
-HTTPS_PROXY=http://127.0.0.1:7897 npx -y skills@latest add xuechenwang-cienet/agent-skills \
+HTTPS_PROXY=http://10.10.11.13:7897 HTTP_PROXY=http://10.10.11.13:7897 \
+  npx -y skills@latest add xuechenwang-cienet/agent-skills \
     -g -s long-task-session -a claude-code opencode -y
 ```
 
@@ -48,6 +49,15 @@ py_compile 与纯 stdlib、`TZ=UTC` 复跑、README 安装命令 owner 拼写。
 ```
 ==== 结果：PASS=41 FAIL=0 ====
 ```
+
+## 发布彩排记录
+
+| 日期 | 内容 | 结果 |
+|---|---|---|
+| 2026-10-26 | `git push` → `npx skills add … -g -s long-task-session` | 安装到 `~/.agents/skills/long-task-session`，Claude Code 侧自动软链 |
+| 2026-10-26 | `diff -r --exclude=__pycache__` 源仓库 vs 安装副本 | **完全一致**（15 个文件） |
+| 2026-10-26 | 用安装副本跑 `new` / `status` / `doctor` | 正常（新会话 `status: FAIL 2/4` 属预期：plan 有 TODO、gates 为空） |
+| 2026-10-26 | 技能发现 | 新会话的技能列表已出现 `long-task-session` |
 
 ## 版本
 
