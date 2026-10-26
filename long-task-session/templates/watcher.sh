@@ -47,7 +47,13 @@ last_note=""
 
 while :; do
   # 1) 终态：只认唯一字符串，不要用百分比（别的阶段也会打印同名百分比）
-  if grep -q "$TERMINAL_MARKER" "$LOG" 2>/dev/null; then
+  # MARKER_FIXED=1 → 按原文匹配（grep -F）；默认按正则（历史行为，支持 ^batches: 这类锚点）
+  if [[ "${MARKER_FIXED:-0}" == "1" ]]; then
+    marker_hit=$(grep -qF -- "$TERMINAL_MARKER" "$LOG" 2>/dev/null && echo 1 || echo 0)
+  else
+    marker_hit=$(grep -q -- "$TERMINAL_MARKER" "$LOG" 2>/dev/null && echo 1 || echo 0)
+  fi
+  if [[ "$marker_hit" == "1" ]]; then
     beat "-" 1 "terminal_marker_found"
     echo "DONE: found '$TERMINAL_MARKER' in $LOG"
     exit 0

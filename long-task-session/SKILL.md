@@ -129,8 +129,9 @@ python3 <skill>/scripts/sessionctl.py status --session ./sessions/2026-01-01-<sl
 python3 <skill>/scripts/sessionctl.py list --paths
 
 # 3) 执行期：起长任务（登记 pid，便于精确停）、里程碑登记产物、随手记录
-python3 <skill>/scripts/sessionctl.py run --stage train --cmd "bash scripts/train.sh" --log logs/train.log
-python3 <skill>/scripts/sessionctl.py stop-run train          # 按 pid 停，不要用 pgrep|kill
+python3 <skill>/scripts/sessionctl.py run --stage train --cmd "bash scripts/train.sh" \
+    --log logs/train.log --marker train_runtime               # 标记出现后自动把 run 标成 done
+python3 <skill>/scripts/sessionctl.py stop-run train          # 需要提前停时按 pid 停，不要用 pgrep|kill
 python3 <skill>/scripts/sessionctl.py ckpt train-done --artifact artifacts/model/
 python3 <skill>/scripts/sessionctl.py note --key fix-1 "把 X 改成 Y，因为 Z"
 

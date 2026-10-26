@@ -14,6 +14,22 @@
   `name` 及仓库命名约定一致；`SKILL.md` / `README.md` 中 4 处路径引用同步更新。
 - 只导入 git 跟踪文件：`config/config.yaml`、`config/members.csv`、`config/state.json`、`output/`、
   `logs/` 不进仓库（技能自带的 `.gitignore` 继续生效）。
+## 0.1.7 — 2026-10-26
+
+把"任务结束"这件事自动落进 `state.json`，并给终态标记加上"原文/正则"两种匹配模式。
+
+- **`run --marker <str>` 自动收尾**：`run` 会在后台挂一个 detached 的收尾监视器，
+  标记出现 → `state.runs[].state=done`（`close_reason=marker`）；进程消失但标记未出现 → `failed`
+  （`close_reason=process_gone`）。此前 `run` 只管"生"不管"收"，命令跑完后记录永远停在 `running`，
+  会误导 `status`/`resume` 的读者（实测：交接时 `wait_train` 就得手工 `stop-run --mark-only`）。
+  `--no-autoclose` 保留旧行为；`--autoclose-interval` 调整轮询（默认 15s）。
+- **终态标记的匹配模式分开**：
+  - `watch --marker-fixed`：按原文 `grep -F` 匹配（默认仍是正则，兼容 `^batches:` 这类锚点）；
+  - `observe` 的 `--marker`：**默认原文**，要正则加 `--marker-regex`。
+  动机：`. [ ] ( )` 在正则里有含义。实测 marker 写 `done[0]` 时，正则模式把 `[0]` 当字符类，
+  永远匹配不到字面行 → 闹钟不响、阶段挂到超时（自测 M1/M2 固化了这个对照）。
+- 自测 96 → **101 条**：marker 两种模式对照（M1/M2）、`run --marker` 自动收尾（A1）、无 marker 保持 running（A2）。
+
 ## 0.1.6 — 2026-10-26
 
 补齐"起/停"与"回溯"三个缺口，并把产物校验改成与 cwd 无关（跨会话接手必需）。

@@ -715,8 +715,74 @@ def cmd_run(args) -> int:
         }
     )
     save_state(session, st)
-    print(f"RUN stage={args.stage} pid={proc.pid} log={log}")
+
+    if args.marker and not args.no_autoclose:
+        # 收尾监视器：marker 出现 → done；进程消失但 marker 未出现 → failed。
+        # 单独 detached，sessionctl 退出后仍然工作；只为把“任务结束”这个事实落进 state.json。
+        ac_log = log.with_suffix(log.suffix + ".autoclose")
+        with open(ac_log, "ab") as ac_fh:
+            subprocess.Popen(
+                [
+                    sys.executable, str(Path(__file__).resolve()),
+                    "_autoclose", "--session", str(session), "--stage", args.stage,
+                    "--log", str(log), "--marker", args.marker,
+                    "--pid", str(proc.pid), "--interval", str(args.autoclose_interval),
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=ac_fh,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        print(f"RUN stage={args.stage} pid={proc.pid} log={log} autoclose=on marker={args.marker!r}")
+        return 0
+    print(f"RUN stage={args.stage} pid={proc.pid} log={log} autoclose=off")
     return 0
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def cmd_autoclose(args) -> int:
+    """内部命令：盯 marker/pid，把结果写回 state.runs[].state（done / failed）。"""
+    session = resolve_session(args)
+    log = Path(args.log)
+    start = time.time()
+    while True:
+        text = _tail_text(log)
+        hit = False
+        if args.marker:
+            if args.marker_regex:
+                hit = re.search(args.marker, text) is not None
+            else:
+                hit = args.marker in text
+        alive = _pid_alive(args.pid)
+        if hit or not alive:
+            st = load_state(session)
+            run = next((r for r in st.get("runs") or [] if r.get("id") == args.stage), None)
+            if run and run.get("state") == "running":
+                iso, epoch = now_pair()
+                run["state"] = "done" if hit else "failed"
+                run["finished_at"] = f"{iso} ({epoch})"
+                run["close_reason"] = "marker" if hit else "process_gone"
+                save_state(session, st)
+                append_log(
+                    session / "SESSION_LOG.md",
+                    f"- {iso} ({epoch}) · autoclose {args.stage} → {run['state']}"
+                    f"（{'marker' if hit else 'process gone'}）[key:autoclose-{args.stage}]",
+                )
+                print(f"AUTOCLOSE stage={args.stage} state={run['state']}")
+            return 0
+        if args.window and (time.time() - start) > args.window:
+            print(f"AUTOCLOSE stage={args.stage} timeout", file=sys.stderr)
+            return 3
+        time.sleep(args.interval)
 
 
 def cmd_stop_run(args) -> int:
@@ -1270,7 +1336,16 @@ def cmd_observe(args, _return_only: bool = False) -> int:
             if found:
                 progress = found[-1].group(0).strip()
         elapsed = int(time.time() - start)
-        if args.marker and args.marker in text:
+        marker_hit = False
+        if args.marker:
+            if getattr(args, "marker_regex", False):
+                try:
+                    marker_hit = re.search(args.marker, text) is not None
+                except re.error as exc:
+                    die(f"invalid --marker (regex): {exc}")
+            else:
+                marker_hit = args.marker in text
+        if marker_hit:
             event = "marker"
             rc = 0
         elif progress is not None:
@@ -1349,6 +1424,7 @@ def cmd_watch(args) -> int:
         SESSION_DIR=str(session),
         LOG=str(log),
         TERMINAL_MARKER=args.marker,
+        MARKER_FIXED="1" if getattr(args, "marker_fixed", False) else "0",
         PROGRESS_REGEX=args.regex or "",
         INTERVAL=str(args.interval),
         MAX_WINDOW=str(args.window),
@@ -1438,9 +1514,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cmd", required=True)
     p.add_argument("--log", default="logs/run.log", help="相对 session 或绝对路径")
     p.add_argument("--cwd", default=None)
-    p.add_argument("--marker", default=None)
+    p.add_argument("--marker", default=None, help="终态标记：出现即把 state.runs[].state 改成 done")
+    p.add_argument("--marker-fixed", action="store_true", help="marker 按原文匹配（默认已经是原文）")
+    p.add_argument("--autoclose-interval", type=int, default=15, help="收尾监视器轮询秒数")
+    p.add_argument("--no-autoclose", action="store_true", help="不自动收尾（保留手工 stop-run 的旧行为）")
     p.add_argument("--interval", type=int, default=60)
     p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("_autoclose", help=argparse.SUPPRESS)
+    p.add_argument("--session", required=True)
+    p.add_argument("--stage", required=True)
+    p.add_argument("--log", required=True)
+    p.add_argument("--marker", required=True)
+    p.add_argument("--marker-regex", action="store_true")
+    p.add_argument("--pid", type=int, required=True)
+    p.add_argument("--interval", type=float, default=15.0)
+    p.add_argument("--window", type=float, default=86400.0)
+    p.set_defaults(func=cmd_autoclose)
 
     p = sub.add_parser("stop-run", help="按登记的 pid 精确停一个 run（不误杀自己）")
     p.add_argument("run_id")
@@ -1497,7 +1587,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("watch", help="自检并托管 watcher 模板（推荐替代手写 watcher）")
     p.add_argument("--log", required=True, help="被监视的日志文件")
-    p.add_argument("--marker", required=True, help="终态标记字符串（唯一、非百分比）")
+    p.add_argument("--marker", required=True, help="终态标记（默认按正则匹配；要原文加 --marker-fixed）")
+    p.add_argument("--marker-fixed", action="store_true", help="按原文匹配（grep -F），避免 . [ ] 等被当元字符")
     p.add_argument("--regex", default=None, help="进度抓取正则；只匹配形状，禁止写死总量")
     p.add_argument("--interval", type=int, default=60)
     p.add_argument("--window", type=int, default=7200)
@@ -1513,7 +1604,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("observe", help="观察者闹钟：睡到事件就退出并唤醒 agent（不判读）")
     p.add_argument("--session", default=None)
     p.add_argument("--log", required=False, default="")
-    p.add_argument("--marker", default="", help="终态标记字符串（唯一、非百分比）")
+    p.add_argument("--marker", default="", help="终态标记（默认按**原文**匹配；要正则加 --marker-regex）")
+    p.add_argument("--marker-regex", action="store_true", help="把 --marker 当正则（默认是原文）")
     p.add_argument("--regex", default="", help="进度正则；只匹配形状，禁止写死总量")
     p.add_argument("--interval", type=float, default=30.0)
     p.add_argument("--checkpoint", type=float, default=2400.0, help="每 N 秒醒一次（默认 40 分钟）")

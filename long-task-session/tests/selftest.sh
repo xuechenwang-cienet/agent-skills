@@ -333,6 +333,38 @@ check "new --date → exit 0" 0 $?
 sess=$(python3 -c "import json;print(json.load(open('$TMP/root/2026-01-02-backdated/state.json'))['session'])")
 [[ "$sess" == "2026-01-02-backdated" ]] && ok "state.session 与目录一致" || bad "state.session 与目录一致" "$sess"
 
+echo "== M1. watcher --marker-fixed：字面量 done[0] 必须命中"
+mkdir -p "$TMP/m1/logs"; printf 'progress\ndone[0] finished\n' > "$TMP/m1/t.log"
+SESSION_DIR="$TMP/m1" LOG="$TMP/m1/t.log" TERMINAL_MARKER='done[0]' MARKER_FIXED=1 \
+  INTERVAL=1 MAX_WINDOW=5 STALE_LIMIT=0 FAIL_ON_STALE=0 RUN_ID=fx1 \
+  timeout 20 bash "$HERE/templates/watcher.sh" >/dev/null 2>&1
+check "MARKER_FIXED=1 → exit 0" 0 $?
+
+echo "== M2. 同一 marker 用正则模式 → 不命中（证明默认正则有坑）"
+SESSION_DIR="$TMP/m1" LOG="$TMP/m1/t.log" TERMINAL_MARKER='done[0]' MARKER_FIXED=0 \
+  INTERVAL=1 MAX_WINDOW=4 STALE_LIMIT=0 FAIL_ON_STALE=0 RUN_ID=fx2 \
+  timeout 20 bash "$HERE/templates/watcher.sh" >/dev/null 2>&1
+check "正则模式 [0] 是字符类 → exit 3（超时）" 3 $?
+
+echo "== A1. run --marker：marker 出现后自动把 state 改成 done"
+$CTL run --session "$TMP/root/$(date +%F)-obs-dec" --stage quick \
+  --cmd "echo started; sleep 2; echo JOB_DONE" --log logs/q.log \
+  --marker JOB_DONE --autoclose-interval 1 >/dev/null 2>&1
+check "run --marker → exit 0" 0 $?
+qs=""
+for _ in $(seq 1 15); do
+  qs=$(python3 -c "import json;d=json.load(open('$TMP/root/$(date +%F)-obs-dec/state.json'));print(next(r['state'] for r in d['runs'] if r['id']=='quick'))" 2>/dev/null || echo "")
+  [[ "$qs" == "done" ]] && break
+  sleep 1
+done
+[[ "$qs" == "done" ]] && ok "autoclose 把 run 状态改成 done" || bad "autoclose 把 run 状态改成 done" "state=$qs"
+
+echo "== A2. run 未给 marker：保持 running（兼容旧行为）"
+$CTL run --session "$TMP/root/$(date +%F)-obs-dec" --stage nomark --cmd "sleep 60" --log logs/n.log >/dev/null 2>&1
+ns=$(python3 -c "import json;d=json.load(open('$TMP/root/$(date +%F)-obs-dec/state.json'));print(next(r['state'] for r in d['runs'] if r['id']=='nomark'))")
+[[ "$ns" == "running" ]] && ok "无 marker → 保持 running" || bad "无 marker → 保持 running" "state=$ns"
+$CTL stop-run nomark --session "$TMP/root/$(date +%F)-obs-dec" >/dev/null 2>&1
+
 echo
 echo "==== 结果：PASS=$pass FAIL=$fail ===="
 [[ $fail -eq 0 ]]

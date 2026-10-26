@@ -113,7 +113,7 @@ sessionctl observe --session sessions/<slug> \
 
 | 事件 | 退出码 | 含义 | agent 该做什么 |
 |---|---|---|---|
-| `marker` | 0 | 终态标记出现 | 判读产物 → 推进下一阶段 |
+| `marker` | 0 | 终态标记出现（**默认按原文匹配**，要正则加 `--marker-regex`） | 判读产物 → 推进下一阶段 |
 | `checkpoint` | 3 | 到点巡检（默认 40 分钟） | 看进度是否正常；正常则**重新挂 observe** |
 | `stale` | 5 | 进度连续 N 次不变（需 `--stale-limit N --exit-on-stale`） | 排障：区分“作业卡住”与“watcher 心跳断” |
 | `timeout` | 2 | 总窗口到点 | 决定继续等待 / 请示用户 |
