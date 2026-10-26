@@ -69,7 +69,7 @@ description: >
 | watcher | 心跳 ≤60s 写 `logs/heartbeat.log`（纯文本）；窗口 ≤2h 可重挂；退出条件绑定**真实终态标记** |
 | reconciler | 会话一接手就跑：`state.json` + 心跳 mtime + 产物哈希，判 running / stale / done |
 
-五条反模式（完整 12 条见 `references/patterns.md`）：
+五条反模式（完整 15 条：12 条主模式 + 3 条变体，见 `references/patterns.md`）：
 
 1. 用输出里的百分比判断终态（别的阶段会打印同名百分比）。
 2. 把"进程还活着"当成任务健康。
@@ -92,7 +92,7 @@ python3 <skill>/scripts/sessionctl.py status --session ./sessions/2026-01-01-<sl
 python3 <skill>/scripts/sessionctl.py ckpt train-done --artifact artifacts/model/
 python3 <skill>/scripts/sessionctl.py note --key fix-1 "把 X 改成 Y，因为 Z"
 
-# 4) 接手时（新上下文）
+# 4) 接手时（新上下文）；产物校验失败时退出码为 1（文本仍会打印）
 python3 <skill>/scripts/sessionctl.py resume --prompt
 
 # 5) 验收完成、归档备份
@@ -126,4 +126,4 @@ opencode 的 plan 模式只允许写 `~/.opencode/plan`。规则：**草稿写�
 | `references/documents.md` | 四份文档的固定小节、`state.json` schema、记录格式、无记忆读者写作要求 |
 | `references/long-running.md` | launcher/watcher/reconciler 规范、40 分钟检查点、反模式 |
 | `references/metrics.md` | 口径复现、噪声带、单变量表、预注册、防过拟合护栏 |
-| `references/patterns.md` | 12 条抽象模式（症状/为什么错/对策），不含真实项目数据 |
+| `references/patterns.md` | 15 条抽象模式（12 主 + 3 变体；症状/为什么错/对策），不含真实项目数据 |

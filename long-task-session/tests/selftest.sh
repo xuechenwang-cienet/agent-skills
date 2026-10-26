@@ -139,6 +139,88 @@ echo "== N6. README 安装命令可执行性（owner 拼写）"
 grep -q "xuechenwang-cienet/agent-skills" "$HERE/../README.md" && ok "README owner 正确" || bad "README owner 正确"
 grep -q "xuechen.xin" "$HERE/../README.md" && bad "README 无错误 owner" || ok "README 无错误 owner"
 
+echo "== T1. 目录产物不崩（B1）"
+$CTL new d1 --root "$TMP/t" >/dev/null 2>&1; s1=$(ls -td "$TMP/t"/*-d1 | head -1)
+mkdir -p "$s1/artifacts/sub" && echo x > "$s1/artifacts/sub/x.txt"
+$CTL ckpt dir-art --artifact artifacts/sub --session "$s1" >/dev/null 2>&1; check "ckpt 目录产物" 0 $?
+v=$($CTL verify --session "$s1" 2>&1); rc=$?
+check "verify 目录产物不崩" 0 $rc "$v"
+echo "$v" | grep -q "目录产物" && ok "verify 标注目录产物" || bad "verify 标注目录产物"
+$CTL status --session "$s1" >/dev/null 2>&1; rc=$?
+{ [[ $rc -eq 0 || $rc -eq 1 ]]; } && ok "status 目录产物不崩（退出码 0/1）" || bad "status 目录产物不崩" "exit=$rc"
+
+echo "== T2. close --backup 不带值（B2）"
+$CTL new d2 --root "$TMP/t" >/dev/null 2>&1; s2=$(ls -td "$TMP/t"/*-d2 | head -1)
+fill_plan "$s2"; fill_acceptance "$s2"
+$CTL state gates.g.threshold ">=1" --session "$s2" >/dev/null 2>&1
+$CTL state gates.g.verdict pass --session "$s2" >/dev/null 2>&1
+SESSION_BACKUP_DIR="$TMP/t/bk2" $CTL close --backup --session "$s2" >/dev/null 2>&1; check "close --backup（无值）" 0 $?
+ls "$TMP/t/bk2"/*.tar.* >/dev/null 2>&1 && ok "备份落在 SESSION_BACKUP_DIR" || bad "备份落在 SESSION_BACKUP_DIR"
+
+echo "== T3/T4. launcher 模板实跑（B3/B4）"
+s3="$TMP/t/launchcase"; mkdir -p "$s3/logs"
+out=$(SESSION_DIR="$s3" NAME=lt CMD="sleep 1; echo started" TERMINAL_MARKER=started \
+      EARLY_SIGNAL=started EARLY_WAIT=5 bash "$HERE/templates/launcher.sh" 2>&1); rc=$?
+check "launcher 正常退出" 0 $rc "$out"
+echo "$out" | grep -q "bad substitution" && bad "launcher 无 bad substitution" "$out" || ok "launcher 无 bad substitution"
+[[ -f "$s3/logs/lt.pid" ]] && ok "PIDFILE 生成" || bad "PIDFILE 生成"
+NAME=lt4 CMD="sleep 5" SESSION_DIR="$s3" TERMINAL_MARKER=never bash "$HERE/templates/launcher.sh" >/dev/null 2>&1
+out2=$(NAME=lt4 CMD="sleep 5" SESSION_DIR="$s3" TERMINAL_MARKER=never bash "$HERE/templates/launcher.sh" 2>&1); rc2=$?
+echo "$out2" | grep -q "already running" && ok "二次启动被拒（幂等）" || bad "二次启动被拒" "$out2"
+check "二次启动退出码 0" 0 $rc2
+
+echo "== T5. ckpt 去重（S1）"
+$CTL ckpt dup --artifact artifacts/sub --session "$s1" >/dev/null 2>&1
+before=$(python3 -c "import json;print(len(json.load(open('$s1/state.json'))['runs']))")
+rows_before=$(grep -c '^| `' "$s1/ARTIFACTS.md")
+$CTL ckpt dup --artifact artifacts/sub --session "$s1" 2>&1 | grep -q "skip" && ok "同名同产物 skip" || bad "同名同产物 skip"
+after=$(python3 -c "import json;print(len(json.load(open('$s1/state.json'))['runs']))")
+rows_after=$(grep -c '^| `' "$s1/ARTIFACTS.md")
+[[ "$before" == "$after" && "$rows_before" == "$rows_after" ]] && ok "runs/ARTIFACTS 未重复" || bad "runs/ARTIFACTS 未重复" "$before/$after $rows_before/$rows_after"
+$CTL ckpt dup --artifact artifacts/sub/x.txt --session "$s1" >/dev/null 2>&1; check "同名异产物 → 退出 2" 2 $?
+
+echo "== T6. close 推进 stage（S3）"
+python3 -c "import json,sys;d=json.load(open('$s2/state.json'));sys.exit(0 if d['stage']=='S5' and d['status']=='done' else 1)"
+check "close 后 stage=S5 / status=done" 0 $?
+
+echo "== T7. blockers 类型校验（S4）"
+$CTL state blockers "等待" --session "$s1" >/dev/null 2>&1; check "字符串 blockers 被拒（exit 2）" 2 $?
+$CTL state blockers '["等待用户拍板"]' --json --session "$s1" >/dev/null 2>&1; check "JSON 数组 blockers 通过" 0 $?
+$CTL resume --session "$s1" 2>&1 | grep -q "等待用户拍板" && ok "blockers 正常渲染（不拆字符）" || bad "blockers 正常渲染"
+
+echo "== T8. 正文含 {{ 不误报（S7）"
+cp "$s2/SESSION_PLAN.md" "$s2/plan.bak"
+printf '\n示例代码：\n```\n{{ 不是占位符 }}\n```\n' >> "$s2/SESSION_PLAN.md"
+$CTL status --session "$s2" 2>&1 | grep -A1 "plan 七件硬内容" | grep -q "✅" && ok "含 {{ 的正文不误报" || bad "含 {{ 的正文不误报"
+mv "$s2/plan.bak" "$s2/SESSION_PLAN.md"
+
+echo "== T9. close 因 plan 未填被拒（N1）"
+$CTL new d9 --root "$TMP/t" >/dev/null 2>&1; s9=$(ls -td "$TMP/t"/*-d9 | head -1)
+fill_acceptance "$s9"
+$CTL state gates.g.threshold ">=1" --session "$s9" >/dev/null 2>&1
+$CTL state gates.g.verdict pass --session "$s9" >/dev/null 2>&1
+$CTL close --backup --session "$s9" >/dev/null 2>&1; check "plan 有 TODO → close=1" 1 $?
+$CTL close --backup --force --session "$s9" >/dev/null 2>&1; check "--force 可强制归档" 0 $?
+
+echo "== N2. watcher 进度消毒"
+mkdir -p "$TMP/t/hb/logs"
+printf 'a\nPROG 1/9 [x]\n' > "$TMP/t/hb/logs/w.log"
+SESSION_DIR="$TMP/t/hb" LOG="$TMP/t/hb/logs/w.log" TERMINAL_MARKER=nope \
+  PROGRESS_REGEX='[0-9]+/[0-9]+ \[' INTERVAL=1 MAX_WINDOW=2 \
+  timeout 8 bash "$HERE/templates/watcher.sh" >/dev/null 2>&1
+lines=$(wc -l < "$TMP/t/hb/logs/heartbeat.log" 2>/dev/null || echo 0)
+[[ "$lines" -ge 1 ]] && ok "watcher 写出心跳" || bad "watcher 写出心跳"
+awk '/progress=/{c++} END{exit (c>0?0:1)}' "$TMP/t/hb/logs/heartbeat.log" && ok "心跳行含 progress 字段" || bad "心跳行含 progress 字段"
+grep -q "progress=1/9" "$TMP/t/hb/logs/heartbeat.log" && ok "进度被抓取为单行" || bad "进度被抓取为单行"
+
+echo "== T10. resume --prompt 退出码（S6）"
+$CTL new d10 --root "$TMP/t" >/dev/null 2>&1; s10=$(ls -td "$TMP/t"/*-d10 | head -1)
+echo ok > "$s10/artifacts/f.txt"
+$CTL ckpt f --artifact artifacts/f.txt --session "$s10" >/dev/null 2>&1
+$CTL resume --session "$s10" --prompt >/dev/null 2>&1; check "产物完好 → resume --prompt=0" 0 $?
+echo broken > "$s10/artifacts/f.txt"
+$CTL resume --session "$s10" --prompt >/dev/null 2>&1; check "产物损坏 → resume --prompt=1" 1 $?
+
 echo
 echo "==== 结果：PASS=$pass FAIL=$fail ===="
 [[ $fail -eq 0 ]]

@@ -12,6 +12,9 @@
 #   PREFLIGHT        可选，前置自检命令（失败即中止）
 #   EARLY_SIGNAL     可选，出现即视为"正常启动"的正则（默认取日志非空）
 #   EARLY_WAIT       可选，启动后等待秒数（默认 60）
+#
+# 幂等只认 PIDFILE。不要用 NAME 做 pgrep：NAME 会出现在调用方 shell 的 env 前缀里
+# （`NAME=x bash launcher.sh`），任何 `pgrep -f <NAME>` 都会自匹配。
 set -euo pipefail
 
 : "${NAME:?NAME required}"
@@ -30,10 +33,6 @@ mkdir -p "$SESSION_DIR/logs"
 if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
   echo "already running: $NAME (pid $(cat "$PIDFILE"))"; exit 0
 fi
-if pgrep -f "[${NAME:0:1}]${NAME:1}" >/dev/null 2>&1 && [[ -n "${STRICT_IDEMPOTENT:-}" ]]; then
-  echo "another process matches '$NAME'; refusing to start (unset STRICT_IDEMPOTENT to override)"; exit 1
-fi
-
 # 2) 前置自检
 if [[ -n "$PREFLIGHT" ]]; then
   echo "+ preflight: $PREFLIGHT"
@@ -48,13 +47,13 @@ echo "$PID" > "$PIDFILE"
 echo "launched $NAME pid=$PID log=$LOG"
 
 # 4) 早期信号：确认真的开始干活，而不是立刻退出
-for _ in $(seq 1 "$EARLY_WAIT"); do
+for i in $(seq 1 "$EARLY_WAIT"); do
   sleep 1
   if ! kill -0 "$PID" 2>/dev/null; then
     echo "process exited within ${EARLY_WAIT}s; tail of log:"; tail -20 "$LOG"; exit 2
   fi
   if grep -qE "$EARLY_SIGNAL" "$LOG" 2>/dev/null; then
-    echo "early signal matched after ${_ }s"
+    echo "early signal matched after ${i}s"
     break
   fi
 done

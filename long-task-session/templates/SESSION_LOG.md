@@ -9,7 +9,7 @@
 
 ## 日志
 
-- {{CREATED_AT}} · 会话创建 · 模式 {{MODE}} · 下一步：填写 SESSION_PLAN.md 的 TODO
+- {{CREATED_SHORT}} · 会话创建 · 模式 {{MODE}} · 下一步：填写 SESSION_PLAN.md 的 TODO
 
 ---
 

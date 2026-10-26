@@ -89,7 +89,8 @@ sessionctl resume --session <dir> --prompt # 可直接粘贴的开场白
 1. `logs/` + `artifacts/` 打包：有 `zstd` 用 `tar.zst`，否则自动降级 `tar.gz`。
 2. 生成 `<包名>.sha256`，与包同目录。
 3. 备份包路径写回 `ARTIFACTS.md` 的"备份位置"列与 `NEXT_PLAN.md`。
-4. 默认落盘 `~/backups/agent-sessions/`，可用 `--backup <dir>` 或 `SESSION_BACKUP_DIR` 覆盖；
+4. 默认落盘 `~/backups/agent-sessions/`；`close --backup`（不带值）用默认目录，`close --backup <dir>`
+   或环境变量 `SESSION_BACKUP_DIR` 覆盖；
    `--remote user@host:/path` 时额外 `rsync`，并记录远端路径。
 5. 大文件（如模型权重）若不适合打包，用 `ckpt --sha256 <hex>` 登记调用方算好的哈希，
    并在 `ARTIFACTS.md` 里注明"外部存储 + 未本地校验"。

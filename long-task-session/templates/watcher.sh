@@ -42,7 +42,8 @@ while :; do
   # 2) 进度（原文抓取，便于事后判断"是否真的在推进"）
   progress="-"
   if [[ -n "$PROGRESS_REGEX" ]]; then
-    progress=$(tr '\r' '\n' < "$LOG" | grep -oE "$PROGRESS_REGEX" | tail -1 || true)
+    # 进度必须压成单行且限长：heartbeat 的契约是"一行一条"，多行会破坏后续解析
+    progress=$(tr '\r' '\n' < "$LOG" | grep -oE "$PROGRESS_REGEX" | tail -1 | tr '\n' ' ' | cut -c1-120 || true)
     [[ -z "$progress" ]] && progress="-"
   fi
 

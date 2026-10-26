@@ -32,7 +32,8 @@ HTTPS_PROXY=http://10.10.11.13:7897 HTTP_PROXY=http://10.10.11.13:7897 \
 - **单一事实源**：改技能只改本仓库，不要改安装目录（`~/.agents/skills/...`）——`npx skills update` 会整体覆盖。
 - **开发期不安装**：逻辑自测直接跑 `python3 long-task-session/scripts/sessionctl.py ...`（用 `--root /tmp/...` 隔离）。
 - **触发测试用软链**：临时 `ln -s <repo>/long-task-session ~/.agents/skills/long-task-session`，测完删除；软链保证只有一份代码。
-- **发布彩排**：`git push` → `npx skills add ...` → 逐文件 diff 安装副本与源仓库 → 新会话触发一次。
+- **发布彩排**：`git push` → `npx skills add ...`（scoped，只装这一个技能）→ 逐文件 diff 安装副本与源仓库 → 新会话触发一次。
+- 不要用 `npx skills update -g` 做单技能更新：它会连带覆盖其它全局技能。
 
 ## 自测
 
@@ -40,14 +41,16 @@ HTTPS_PROXY=http://10.10.11.13:7897 HTTP_PROXY=http://10.10.11.13:7897 \
 bash long-task-session/tests/selftest.sh
 ```
 
-覆盖 18 组断言（41 个检查点）：创建/幂等/冲突、lite 模式、status 四项检查、ckpt 与哈希校验（含篡改与外部哈希）、
-note 去重、resume 与三条禁止事项、close 与备份、list/reconcile、心跳判活（running/stale）、state 白名单、
-py_compile 与纯 stdlib、`TZ=UTC` 复跑、README 安装命令 owner 拼写。
+覆盖 30 组断言（67 个检查点）：创建/幂等/冲突、lite 模式、status 四项检查、ckpt 与哈希校验（含篡改、目录产物、
+外部哈希）、ckpt 去重、note 去重、resume 与三条禁止事项及其退出码、close 与备份（含 `--backup` 无值、
+`--force`、stage 推进、归档前四项检查）、launcher 实跑与幂等、watcher 心跳消毒、list/reconcile、
+心跳判活（running/stale）、state 白名单与 blockers 类型、`{{` 误报、py_compile 与纯 stdlib、
+`TZ=UTC` 复跑、README 安装命令 owner 拼写。
 
 最近一次结果（2026-10-26，Linux，Python 3.13）：
 
 ```
-==== 结果：PASS=41 FAIL=0 ====
+==== 结果：PASS=67 FAIL=0 ====
 ```
 
 ## 发布彩排记录

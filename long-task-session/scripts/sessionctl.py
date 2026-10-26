@@ -60,6 +60,7 @@ PLACEHOLDERS = {
     "{{SLUG}}": "slug",
     "{{SESSION}}": "session",
     "{{CREATED_AT}}": "created_at",
+    "{{CREATED_SHORT}}": "created_short",
     "{{MODE}}": "mode",
     "{{GIT_COMMIT}}": "git_commit",
 }
@@ -89,6 +90,8 @@ def fmt_bytes(n: int) -> str:
 
 
 def sha256_file(path: Path) -> str:
+    if path.is_dir():
+        raise ValueError(f"is a directory: {path}（目录产物不做哈希，见 check_artifacts）")
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
@@ -219,7 +222,9 @@ def render_state_block(state: dict) -> str:
         f"- 下一条命令：`{na.get('cmd') or '未设置'}`（预期：{na.get('expect') or '-'}；见 {na.get('doc') or '-'}）"
     )
     blockers = state.get("blockers") or []
-    lines.append(f"- 阻塞：{'；'.join(blockers) if blockers else '无'}")
+    if isinstance(blockers, str):  # 兼容历史会话里被写成字符串的情况
+        blockers = [blockers]
+    lines.append(f"- 阻塞：{'；'.join(str(b) for b in blockers) if blockers else '无'}")
     gates = state.get("gates") or {}
     if gates:
         parts = [
@@ -335,10 +340,12 @@ def cmd_new(args) -> int:
     created = f"{iso} ({epoch})"
     git_commit = git_short(target)
 
+    short, short_epoch = stamp_short()
     values = {
         "slug": slug,
         "session": session_id,
         "created_at": created,
+        "created_short": f"{short} ({short_epoch})",
         "mode": mode,
         "git_commit": git_commit,
     }
@@ -454,7 +461,7 @@ def check_plan(session: Path) -> tuple[bool, list[str]]:
     for h in PLAN_REQUIRED:
         if h not in text:
             problems.append(f"缺少小节 {h}")
-    if "{{" in text:
+    if re.search(r"\{\{[A-Z_][A-Z0-9_]*\}\}", text):
         problems.append("存在未替换的占位符 {{…}}")
     if has_todo(text):
         problems.append("存在未清理的 TODO:")
@@ -506,6 +513,12 @@ def check_artifacts(session: Path, st: dict) -> tuple[bool, list[str], list[str]
             continue
         if not path.exists():
             errors.append(f"{r['path']} 不存在")
+            continue
+        if path.is_dir():
+            if r["sha256"].strip("`") not in ("dir", ""):
+                errors.append(f"{r['path']} 是目录但记录了文件哈希 {r['sha256'][:16]}…")
+            else:
+                notes.append(f"{r['path']}：目录产物，未做哈希（内容以 CKPT 记录为准）")
             continue
         actual = sha256_file(path)
         if r["sha256"] and not actual.startswith(r["sha256"].strip("`")[:64]):
@@ -633,6 +646,12 @@ def cmd_ckpt(args) -> int:
     )
 
     st = load_state(session)
+    for r in st.get("runs") or []:
+        if r.get("id") == args.name:
+            if r.get("artifact") == rel:
+                print(f"skip: ckpt '{args.name}' already registered")
+                return 0
+            die(f"ckpt '{args.name}' 已用于其他产物 {r.get('artifact')}；请换名字")
     iso, epoch = now_pair()
     kind = args.note or "artifact"
     block = [
@@ -695,6 +714,10 @@ def cmd_state(args) -> int:
         die(f"stage must be one of {STAGES}")
     if key == "status" and value not in STATUSES:
         die(f"status must be one of {STATUSES}")
+    if key == "blockers" and (
+        not isinstance(value, list) or not all(isinstance(x, str) for x in value)
+    ):
+        die("""blockers 必须是字符串数组：state blockers '["等待用户拍板"]' --json""")
     parts = key.split(".")
     if key.startswith("gates."):
         if len(parts) < 3:
@@ -764,7 +787,8 @@ def cmd_resume(args) -> int:
         print(
             "  3. 不要用单条样本的涨跌下结论（见 references/metrics.md 的噪声带规则）。"
         )
-        return 0
+        # 文本始终打印；退出码与 verify 一致，便于调用方感知产物已损坏
+        return 0 if ok_v else 1
 
     print(render_state_block(st))
     print(f"- 产物校验：{'PASS' if ok_v else 'FAIL'}")
@@ -814,14 +838,43 @@ def cmd_reconcile(args) -> int:
 
 
 def cmd_close(args) -> int:
+    """归档前跑完四项检查（N1）；--force 可跳过但会写日志。"""
     session = resolve_session(args)
-    st = load_state(session)
-    ok4, p4 = check_acceptance(session, st)
-    if not ok4:
-        print("close: 拒绝归档，验收表未完成：")
-        for msg in p4:
+    ok2, p2, st = check_state(session)
+    if not st:
+        print("close: 拒绝归档，state.json 不可用：")
+        for msg in p2:
             print("  - " + msg)
         return 1
+    ok1, p1 = check_plan(session)
+    ok3, p3, _ = check_artifacts(session, st)
+    ok4, p4 = check_acceptance(session, st)
+    failed = [
+        (name, problems)
+        for name, ok, problems in (
+            ("plan 七件硬内容", ok1, p1),
+            ("state.json 自洽", ok2, p2),
+            ("产物哈希可验", ok3, p3),
+            ("验收表与判定", ok4, p4),
+        )
+        if not ok
+    ]
+    if failed and not args.force:
+        print("close: 拒绝归档，以下检查未通过：")
+        for name, problems in failed:
+            print(f"  ❌ {name}")
+            for msg in problems:
+                print("      - " + msg)
+        print("如需强制归档：close --backup --force（会记入日志）")
+        return 1
+    if failed:
+        ts, ep = stamp_short()
+        append_log(
+            session / "SESSION_LOG.md",
+            f"- {ts} ({ep}) · 强制归档 · 证据: close --force · "
+            f"结果: 跳过 {len(failed)} 项检查（{[n for n, _ in failed]}） · 决策: 已知不完整仍归档",
+        )
+        print(f"warn: --force 跳过 {len(failed)} 项检查（已记入日志）")
 
     logs = session / "logs"
     arts = session / "artifacts"
@@ -830,8 +883,6 @@ def cmd_close(args) -> int:
     ).expanduser()
     backup_dir.mkdir(parents=True, exist_ok=True)
     iso, epoch = now_pair()
-    target_dir = session / "backup"
-    target_dir.mkdir(exist_ok=True)
 
     # zstd 压缩走外部 tar（Python tarfile 不支持 zstd），缺失时自动降级 gzip
     use_zstd = shutil.which("zstd") is not None and shutil.which("tar") is not None
@@ -896,6 +947,7 @@ def cmd_close(args) -> int:
         f"- {ts} ({ep}) · 归档备份 · 证据: {pkg} · 结果: {fmt_bytes(pkg.stat().st_size)} · 决策: 会话可归档",
     )
     st["status"] = "done"
+    st["stage"] = "S5"
     for r in st.get("runs") or []:
         if r.get("state") == "running":
             r["state"] = "done"
@@ -999,8 +1051,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_reconcile)
 
     p = sub.add_parser("close", help="验收后归档备份")
-    p.add_argument("--backup", default=None)
+    p.add_argument(
+        "--backup",
+        nargs="?",
+        const="",
+        default=None,
+        help="归档备份；不跟值时用 SESSION_BACKUP_DIR 或默认目录",
+    )
     p.add_argument("--remote", default=None)
+    p.add_argument("--force", action="store_true", help="跳过未通过的检查并归档（写入日志）")
     add_common(p)
     p.set_defaults(func=cmd_close)
 
