@@ -2,6 +2,19 @@
 
 `npx skills update` 会整体覆盖安装目录，本文件用于说明每个版本改了什么。
 
+版本号按技能独立演进；标题未标技能名的条目属于 `long-task-session`（早期所有条目都是它）。
+
+## tokenplan-enterprise-bailian 0.1.0 — 2026-10-26
+
+从 `cienet-ai/tokenplan-enterprise-bailian-skills` 导入为 `agent-skills` 的顶层技能目录，功能无改动。
+
+- 新目录 `tokenplan-enterprise-bailian/`（24 个文件）：`SKILL.md` + 说明 + `config/*.sample.*` + `scripts/`
+  （含 `lib/`、`steps/`、`tools/`）。
+- 目录名由 `tokenplan-enterprise-bailian-skills` 改为 `tokenplan-enterprise-bailian`，与 frontmatter
+  `name` 及仓库命名约定一致；`SKILL.md` / `README.md` 中 4 处路径引用同步更新。
+- 只导入 git 跟踪文件：`config/config.yaml`、`config/members.csv`、`config/state.json`、`output/`、
+  `logs/` 不进仓库（技能自带的 `.gitignore` 继续生效）。
+
 ## 0.1.4 — 2026-10-26
 
 文档修正：把"宿主的后台任务时限"从传闻改成实测事实。无代码改动、无 schema 改动。

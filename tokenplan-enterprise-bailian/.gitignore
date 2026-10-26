@@ -1,0 +1,16 @@
+# ---------- 本机真实配置（只提交 .sample 版本） ----------
+config/config.yaml
+config/members.csv
+
+# 机器本地状态（含确认时间戳，换机器需重新确认）
+config/state.json
+
+# ---------- 运行产物（可重新生成） ----------
+output/
+logs/
+
+# ---------- Python / macOS ----------
+__pycache__/
+*.pyc
+.venv/
+.DS_Store

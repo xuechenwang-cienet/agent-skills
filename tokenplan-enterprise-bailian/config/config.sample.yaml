@@ -1,0 +1,94 @@
+# ============================================================
+#  SAMPLE 配置 —— 复制成 config.yaml 后再修改
+#
+#      cp config/config.sample.yaml config/config.yaml
+#      cp config/members.sample.csv config/members.csv
+#
+#  config.yaml 与 members.csv 已被 .gitignore 忽略，不会进版本库。
+# ============================================================
+
+# ============================================================
+#  Token Plan 用量分析 — 全局配置
+#  改动本文件后，相关确认项会自动失效（哈希变化），下次运行需重新确认。
+# ============================================================
+
+web:
+  # 控制台根地址（不含组织 ID）
+  root: https://tokenplan-enterprise.bailian.aliyunportal.com
+  # 组织 ID，位于 URL 中 /org_xxx/ 部分
+  org_id: org_0000000000000000000000000000000   # ← 换成你自己的组织 ID（在控制台 URL 的 /org_xxx/ 段）
+  paths:
+    usage: /{org_id}/organization/usage
+    overview: /{org_id}/organization/overview
+
+# ------------------------------------------------------------
+# 原始数据导出
+# ------------------------------------------------------------
+export:
+  # MINUTE | HOUR | DAY —— 明细粒度，MINUTE 为最细
+  granularity: MINUTE
+  # org = 不传 AccountId，导出整个组织；member = 需要逐个成员（本流程使用 org）
+  scope: org
+  # 导出任务轮询
+  poll_interval_s: 1.5
+  poll_timeout_s: 120
+  # 下载后校验：记录数为 0 视为失败
+  min_records: 100
+
+# ------------------------------------------------------------
+# 价格（人民币）。有效期内的单价；调价时改这里并把 effective_from 更新
+# ------------------------------------------------------------
+pricing:
+  currency: CNY
+  effective_from: 2026-10-01
+  standard_seat:
+    price: 138
+    credits: 25000
+  premium_seat:
+    price: 489
+    credits: 100000
+  pack:
+    price: 3500
+    credits: 625000
+    shared_pool: true
+
+# ------------------------------------------------------------
+# 预测与结余口径
+# ------------------------------------------------------------
+forecast:
+  # 日均按工作日 / 周末分开建模
+  split_workday_weekend: true
+  # 最近一天数据不完整，排除
+  exclude_partial_days: true
+  # 席位结余需超过额度的该比例才计入（避免把预测误差当浪费）
+  seat_unused_threshold: 0.05
+  # 采购建议的缓冲比例
+  uplift_buffer: 0.15
+
+# ------------------------------------------------------------
+# 输出
+# ------------------------------------------------------------
+output:
+  # 按启动日期平铺：output/YYYY-MM-DD/
+  layout: by_run_date
+  # 是否保留原始 CSV 与订阅快照
+  keep_raw: true
+  # 是否生成逐组的独立报告
+  group_reports: true
+
+# ------------------------------------------------------------
+# 通知（本期仅产出 recipients.csv，不发信）
+# ------------------------------------------------------------
+notify:
+  enabled: false
+  recipients_file: recipients.csv
+
+# ------------------------------------------------------------
+# 确认项失效期（天）。文件内容哈希变化会立即失效，与天数无关。
+# ------------------------------------------------------------
+confirmation:
+  ttl_days:
+    web_root: 365
+    roster: 30
+    pricing: 90
+    calendar: 365

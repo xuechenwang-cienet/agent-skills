@@ -1,0 +1,8 @@
+hrid,name_en,name_zh,dept,pcode,email,team_owner,seat_type,seat_credits,sharing_with,bailian_accounts,bailian_account_ids,active
+10001,Alice Chen,陈小美,LAB 1,PRJ-ALPHA,alice.chen@example.com,张伟,standard,25000,,陈小美,acc_00000000000000000000000000000001,true
+10002,Bob Li,李小明,LAB 1,PRJ-ALPHA,bob.li@example.com,张伟,standard,25000,,李小明,acc_00000000000000000000000000000002,true
+10003,Carol Wang,王丽,LAB 2,PRJ-BETA,carol.wang@example.com,张伟,premium,100000,,王丽,acc_00000000000000000000000000000003,true
+10004,David Zhao,赵强,LAB 2,PRJ-BETA,david.zhao@example.com,李娜,standard,25000,David_Zhao,赵强,acc_00000000000000000000000000000004,true
+10005,Eve Sun,孙悦,ENG,PRJ-GAMMA,eve.sun@example.com,李娜,standard,25000,,"孙悦;Sun_Yue",acc_00000000000000000000000000000005;acc_00000000000000000000000000000006,true
+10006,Frank Wu,吴凡,ENG,PRJ-GAMMA,frank.wu@example.com,李娜,standard,25000,,,,true
+10007,Grace Xu,徐蕾,LAB 3,PRJ-DELTA,grace.xu@example.com,王强,standard,25000,,徐蕾,acc_00000000000000000000000000000007,true
