@@ -8,12 +8,15 @@
 |---|---|---|
 | [`long-task-session`](./long-task-session/) | 把预计超过 40 分钟的长任务从想法推进到可验收结果：六阶段流程 + 四份会话文档 + 长任务三件套 | "长任务""跑一晚上""session plan""验收红线" |
 | [`tokenplan-enterprise-bailian`](./tokenplan-enterprise-bailian/) | 阿里云百炼 Token Plan 组织用量分析：导出全量明细、反推 Credits 结算系数、按项目组汇总、预测下月采购与席位结余，生成部门 + 各组 HTML 报告 | "百炼用量""Token Plan""Credits 系数""token 兑换率""项目组用量" |
+| [`doc-review`](./doc-review/) | 通用文档评审与受控修订：双 agent 对抗评审、声明核验、引用/链接检查、人工决策记录、按已接受清单 1:1 修复、diff 回归审计 | "评审/审计/修订文档""核对修改摘要""审核意见" |
 
 ## 安装
 
 ```bash
 # 安装单个技能（全局，claude-code + opencode）
 npx -y skills@latest add xuechenwang-cienet/agent-skills -g -s long-task-session \
+    -a claude-code opencode -y
+npx -y skills@latest add xuechenwang-cienet/agent-skills -g -s doc-review \
     -a claude-code opencode -y
 
 # 换 -s 即可装其它技能，例如：
@@ -68,6 +71,20 @@ python3 tokenplan-enterprise-bailian/scripts/run.py --help
 ```
 
 真实跑一次需要 `cp config/*.sample.*` 出本机配置并在浏览器登录百炼控制台，见该技能 `SKILL.md`。
+
+### doc-review
+
+```bash
+bash doc-review/tests/selftest.sh
+```
+
+离线 11 项：脚本语法、声明抽取（校准件 21 条）、阶段闸门正反例（缺工件 FAIL / 补齐 PASS）、
+最小 xlsx 盘点（单元格-行引用不一致与工具残留被检出）、`final_clean` 清除与幂等、
+快照 diff 自比、链接核验错误处理。最近一次结果（2026-10-27，Linux，Python 3.10）：
+
+```
+==== 结果：PASS=11 FAIL=0 ====
+```
 
 ## 发布彩排记录
 

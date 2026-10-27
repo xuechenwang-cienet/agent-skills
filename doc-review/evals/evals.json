@@ -1,0 +1,23 @@
+{
+  "skill_name": "doc-review",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "帮我评审这两个文件的修订质量：CNT-QUA-GUID-SecureRD-v2.0-draft.docx 和 CNT-QUA-CHK-ProjectSecurity-SD-v1.0-draft.xlsx。重点核对 review/Change-Summary.md 里的声明是否属实（条数、级别分布、链接），以及检查单的引用是否都能在指南里找到。按双 agent 流程走，评审结论先给我看，确认后再改。",
+      "expected_output": "建立快照与盘点；生成声明登记表并逐条裁定；产出 01-findings（含证据与复现命令）与待决策清单；未获确认前不修改文件",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "review this revised security guideline (docx) and its companion checklist (xlsx). Verify all counts, cross-references, and external links; check whether the referenced standards (OWASP Top 10, ASVS, NIST SP 800-63B-4) are cited with correct versions; then apply the fixes I confirm and produce a fix summary with a diff audit.",
+      "expected_output": "L3 flow: baseline snapshot, claim register with verdicts, link report distinguishing 404 vs bot-block, decision record, 1:1 mapped fixes, post-fix diff audit report",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "另一个 agent 刚改完这两个文件，你去审计它的修改过程：改动是否都对应已接受的评审意见、有没有改出新问题、修改摘要里的数字和实际一致吗。",
+      "expected_output": "diff 审计报告：应改已改/应改未改/回归/文本外变更四分类，机械复测（计数/范围/链接/残留），声明同步核对，通过/回炉结论",
+      "files": []
+    }
+  ]
+}
