@@ -110,6 +110,7 @@ td.num{font-family:var(--mono);font-variant-numeric:tabular-nums;letter-spacing:
 .chip.warn{color:var(--amber);border-color:rgba(232,180,74,.4);background:rgba(232,180,74,.1)}
 .chip.ok{color:var(--sea);border-color:rgba(95,201,165,.35);background:rgba(95,201,165,.08)}
 .chip.none{color:var(--dim2);border-color:var(--line);background:rgba(255,255,255,.02)}
+.chip.mgmt{color:var(--violet);border-color:rgba(199,146,234,.42);background:rgba(199,146,234,.09)}
 
 .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
 .grid2{display:grid;grid-template-columns:1.02fr .98fr;gap:26px;align-items:start}

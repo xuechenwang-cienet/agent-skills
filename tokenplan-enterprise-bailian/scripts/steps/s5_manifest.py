@@ -79,6 +79,19 @@ def run(cfg, A, files, out_dir, log, extra=None):
         f"不一致 {tz.get('mismatch', 0)}/{tz.get('checked', 0)}"
         f"（{tz.get('ratio', 0):.2f}%）" if tz.get("checked") else "无样本")
 
+    # 13. 权限边界：基础版报告不得包含管理节（警告级）
+    basic_path = next((f for f in files if os.path.basename(f) == "token_credits_report.html"), None)
+    if basic_path:
+        try:
+            basic_html = open(basic_path, encoding="utf-8").read()
+        except OSError:
+            basic_html = ""
+        sentinels = [s for s in ('id="groups"', 'id="behavior"', 'id="matrix"',
+                                 'id="subs"', 'id="seat"', 'id="advice"',
+                                 'class="chip mgmt"') if s in basic_html]
+        chk("基础版报告不含管理节", not sentinels,
+            f"混入管理内容：{sentinels}" if sentinels else "通过")
+
     b = A.get("behavior") or {}
     n_member = len([f for f in files if os.path.basename(f).startswith("member-")])
     log(f"  · 行为：夜间 {b.get('night_share', 0):.1f}% · 周末 {b.get('weekend_share', 0):.1f}% · "
@@ -87,7 +100,7 @@ def run(cfg, A, files, out_dir, log, extra=None):
     ok = all(c["ok"] for c in checks if c["name"] not in
              ("Bailian 账号全部映射到名册", "目标月份日历已核对", "下月日历已核对",
               "个人报告数量 = 有账号席位数", "行为分布合计 = 部门总点数",
-              "peak/offpeak 与时间戳一致"))
+              "peak/offpeak 与时间戳一致", "基础版报告不含管理节"))
 
     manifest = {
         "ok": ok,

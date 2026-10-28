@@ -77,6 +77,8 @@ output:
   group_reports: true
   # 是否生成逐人的个人画像报告（member-*.html，含模型偏好/作息/节奏/建议）
   member_reports: true
+  # 是否生成管理版报告（management_report.html：组/人/成本管理节，仅 boss 收）
+  management_report: true
 
 # ------------------------------------------------------------
 # 行为画像口径（可选；不参与确认哈希，改动不触发重新确认）
@@ -93,6 +95,11 @@ behavior:
 notify:
   enabled: false
   recipients_file: recipients.csv
+  # 管理版报告（management_report.html）收件人 —— 会以 role=boss 写入 recipients.csv
+  # 支持两种写法：纯邮箱字符串，或 {name: 显示名, email: 邮箱}
+  boss_recipients: []
+  #  - boss@cienet.com.cn
+  #  - {name: 部门老板, email: the.boss@cienet.com.cn}
 
 # ------------------------------------------------------------
 # 确认项失效期（天）。文件内容哈希变化会立即失效，与天数无关。

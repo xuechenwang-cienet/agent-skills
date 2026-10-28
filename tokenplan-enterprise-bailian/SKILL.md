@@ -2,11 +2,11 @@
 name: tokenplan-enterprise-bailian
 description: >
   阿里云百炼 Token Plan 组织用量分析：从控制台导出全量用量明细，反推每个模型/时段/token 类型的
-  Credits 结算系数，按项目组汇总用量，预测下月消耗与席位结余，生成部门报告 + 各组报告 +
-  每人一份的行为画像报告（模型偏好占比、作息热力图、使用节奏）。触发场景：用户提到"百炼用量"、
-  "Token Plan"、"Credits 系数"、"token 兑换率"、"部门用量报告"、"项目组用量"、"席位结余"、
-  "下月采购建议"、"个人用量画像"、"员工使用统计"、"tokenplan 分析"、"bailian usage report"。
-  也可作为定时任务（--non-interactive）每周生成当月报告。
+  Credits 结算系数，按项目组汇总用量，预测下月消耗与席位结余。报告按角色分层：基础版（系数口径，
+  所有人）、管理版（组/人/成本，限老板）、组报告（限组长）、个人画像（人手一份）。触发场景：用户提到
+  "百炼用量"、"Token Plan"、"Credits 系数"、"token 兑换率"、"部门用量报告"、"项目组用量"、
+  "席位结余"、"下月采购建议"、"个人用量画像"、"员工使用统计"、"报告权限分层"、"tokenplan 分析"、
+  "bailian usage report"。也可作为定时任务（--non-interactive）每周生成当月报告。
 ---
 
 # Token Plan 用量分析
@@ -131,20 +131,38 @@ output/2026-10-20/
 ├── raw/usage_detail.csv           全量明细（几分钟到十几 MB）
 ├── raw/subscription.json          订阅/席位/加油包快照
 ├── data/analysis.json             结构化分析结果（可单独消费）
-├── token_credits_report.html      部门报告（13 节，含「人员行为总览」与个人报告索引）
-├── team-<组长>.html               每个项目组一份（含「成员作息与选型对比」）
-├── member-<姓名>.html             每人一份行为画像报告（模型偏好/作息/节奏/对比/建议）
+├── token_credits_report.html      基础版：系数与计费口径（所有人可阅）
+├── management_report.html         管理版：组/人/成本管理节（仅部门老板）
+├── team-<组长>.html               每个项目组一份（限本组负责人）
+├── member-<姓名>.html             每人一份行为画像报告（发本人为裁剪版）
 ├── token_credits_coefficients.xlsx / .md
-├── recipients.csv                 收件人清单（含 member_report 列）
+├── recipients.csv                 分发清单（含角色与各报告列）
 ├── manifest.json                  清单 + 自检结果
 └── logs/2026-10-20.log
 ```
+
+## 权限分层
+
+报告按受众分三层，权限边界即文件边界（每份文件只含该角色该看的数据）：
+
+| 内容 | member（所有人） | owner（组长） | boss（部门老板） |
+|---|---|---|---|
+| 基础版：系数总表、高峰/平峰、三种 cache、上下文分档、原始类型 | ✓ | ✓ | ✓ |
+| 自己的画像 member-*.html | ✓ 仅自己 | ✓ | ✓ |
+| 组报告 team-*.html（成员明细/作息对比/采购结余） | ✗ | ✓ 仅本组 | ✓ |
+| 管理版 management_report.html（组总览/人员行为/矩阵/订阅/结余/诊断） | ✗ | ✗ | ✓ |
+
+- **基础版**不含任何组名、人名与金额；s5 自检会扫描管理节哨兵防泄漏
+- **个人画像**发本人为裁剪版：相似同事匿名化（姓名仅管理者可见），无组报告链接
+- 管理版收件人在 `notify.boss_recipients` 配置（邮箱或 {name, email}），以 role=boss 写入 recipients.csv
+- 将来上线按登录身份传 role 即可复用同一套渲染代码做访问控制
 
 成员身份 key 的回退链：**中文名 > 钉联名（bailian_accounts 首项）> 邮箱前缀 > hrid > 英文名**；
 撞名自动加 `-2` 后缀并在 manifest 打 warning。`hrid` 仅作最后兜底，不参与文件名逻辑
 （名册里 hrid 可能是错数据，无需修正即可正常出报告）。
 
-`recipients.csv` 里 owner 行 `send_dept=true`（附部门报告）；每行都带 `member_report`（本人画像报告）——可直接做邮件合并。
+`recipients.csv` 按行列出每人该收的文件：`basic_report`（所有人）、`report`（owner 行 = 本组报告）、
+`member_report`（本人画像）、`mgmt_report`（仅 boss 行）——可直接做邮件合并。
 个人报告默认开启（`output.member_reports: true`），未开通账号的席位自动跳过。
 
 ## 行为画像口径
@@ -208,6 +226,7 @@ output/2026-10-20/
 10. 个人报告数量 = 有账号席位数（**警告级**，`member_reports` 关闭时跳过）
 11. 行为分布（24h / 逐日）合计 = 部门总点数（**警告级**）
 12. `peak`/`offpeak` 后缀与时间戳小时一致率 ≥98%（**警告级**，异常说明导出时区或时段口径变了，作息图不可信）
+13. 基础版报告不含管理节（**警告级**，扫描组/行为/矩阵/订阅/结余/诊断节哨兵，防权限泄漏）
 
 ## 故障排查
 

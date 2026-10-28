@@ -28,7 +28,9 @@ def _price_of(rates, model):
             if r["model"] == model and r["ctx"] == ctx and r["period"] == per}, (ctx, per)
 
 
-def render(A, cfg, key: str, accent: str) -> str:
+def render(A, cfg, key: str, accent: str, role: str = "member") -> str:
+    """role="member" 发本人的裁剪版（跨人信息匿名化）；role="full" 管理者点开的完整版。"""
+    assert role in ("member", "full"), role
     meta, cal, sub, proc = A["meta"], A["calendar"], A["subscription"], A["procurement"]
     by_key = {p["key"]: p for p in A["people"]}
     p = by_key[key]
@@ -151,18 +153,26 @@ def render(A, cfg, key: str, accent: str) -> str:
         pct_row("周末占比", mm(pr["weekend_share"], "%", 1), pct["weekend"], rgb=(255, 122, 69)),
         pct_row("混合单价", mm(pr["mix_price"], "", 0), pct["mix_price"], rgb=(199, 146, 234)),
     ])
-    peers = ('<span class="hint" style="margin-left:10px">组内暂无可比的活跃同事</span>'
-             if not p["peers"] else
-             "".join(f'<a class="file" style="display:inline-flex;gap:10px;margin:4px 6px 0 0;padding:8px 13px" '
-                     f'href="member-{esc(q["key"])}.html"><span class="nm">{esc(q["name"])}</span>'
-                     f'<span class="ds" style="margin:0">模型结构相似 {q["sim"]}%</span></a>'
-                     for q in p["peers"]))
+    if role == "member":
+        peers = (f'<span class="hint">组内另有 {len(p["peers"])} 位模型结构相近的同事'
+                 f'{"，姓名仅管理者可见" if p["peers"] else ""}。</span>'
+                 if p["credits"] > 0 else
+                 '<span class="hint">本月暂无用量，无法计算结构相似度。</span>')
+    else:
+        peers = ('<span class="hint" style="margin-left:10px">组内暂无可比的活跃同事</span>'
+                 if not p["peers"] else
+                 "".join(f'<a class="file" style="display:inline-flex;gap:10px;margin:4px 6px 0 0;padding:8px 13px" '
+                         f'href="member-{esc(q["key"])}.html"><span class="nm">{esc(q["name"])}</span>'
+                         f'<span class="ds" style="margin:0">模型结构相似 {q["sim"]}%</span></a>'
+                         for q in p["peers"]))
 
     # ---------- 07 建议 ----------
     advice = []
 
-    def save_move(src_in, src_out, dst_in, dst_out, ratio=0.3):
-        return ratio * (src_in * (src_in - dst_in) + src_out * (src_out - dst_out))
+    def save_move(in_tok, out_tok, src_in_rate, src_out_rate, dst_in_rate, dst_out_rate, ratio=0.3):
+        # credits = tokens / 1e6 × rate；省 = 迁移比例 × token 数 × 单价差
+        return ratio * (in_tok * (src_in_rate - dst_in_rate)
+                        + out_tok * (src_out_rate - dst_out_rate)) / 1e6
 
     if models:
         m0 = models[0]
@@ -172,7 +182,8 @@ def render(A, cfg, key: str, accent: str) -> str:
         flash_out = next((r for r in rates if r["model"] == "deepseek-v4.1-flash"
                           and r["period"] == "offpeak" and r["role"] == "token_out"), None)
         if keys.get("token_in") and flash and flash_out and keys["token_in"] > flash["rate"] * 2:
-            save = save_move(m0["inp"], m0["out"], flash["rate"], flash_out["rate"], 0.3)
+            save = save_move(m0["inp"], m0["out"], keys["token_in"], keys["token_out"],
+                             flash["rate"], flash_out["rate"], 0.3)
             advice.append(("选型降级", f"主力 <b>{esc(m0['name'])}</b> 输入 {fnum(keys.get('token_in'))} / 输出 {fnum(keys.get('token_out'))} 点/1M。"
                            f"若把 30% 的输入/输出换到 deepseek-v4.1-flash 平峰（{fnum(flash['rate'])} / {fnum(flash_out['rate'])}），"
                            f"全月约省 <b>{f(save)}</b> 点。适合批处理、摘要、评测类负载。"))
@@ -212,7 +223,7 @@ body{{--accent:{accent}}}
 <header class="mast"><div class="wrap">
   <div class="eyebrow"><span class="dot"></span><span>阿里云百炼 · Token Plan</span>
     <span>个人用量画像</span><span>{meta["data_start"]} → {meta["data_end"]}</span>
-    <span><a href="team-{esc(p["owner"])}.html">{esc(p["owner"])} 组</a></span></div>
+    <span>{f'<a href="team-{esc(p["owner"])}.html">{esc(p["owner"])} 组</a>' if role == "full" else f'{esc(p["owner"])} 组'}</span></div>
   <h1>{esc(p["name"])}<em>.</em></h1>
   <p class="lede">{esc(p["dept"])} · {esc(p["pcode"])} · {esc("高级" if p["premium"] else "标准")}席位
     {f'· 与 {esc(p["shared_with"])} 共享' if p["shared_with"] else ""} ·
@@ -248,7 +259,7 @@ body{{--accent:{accent}}}
       周末 {(pr["weekend_share"] or 0):.1f}%。</p></div>
   </div>
   <div class="kv rv" style="margin-top:22px">
-    <div>项目组</div><div><a href="team-{esc(p["owner"])}.html">{esc(p["owner"])} 组</a> · {esc(p["dept"])} · {esc(p["pcode"])}</div>
+    <div>项目组</div><div>{f'<a href="team-{esc(p["owner"])}.html">{esc(p["owner"])} 组</a>' if role == "full" else f'{esc(p["owner"])} 组'} · {esc(p["dept"])} · {esc(p["pcode"])}</div>
     <div>联系邮箱</div><div class="mono">{esc(p["email"] or "—")}</div>
     <div>Bailian 账号</div><div class="mono">{esc("；".join(p["accounts"])) if p["accounts"] else "未开通"}</div>
     <div>席位</div><div>{"高级" if p["premium"] else "标准"} · 额度 {f(p["quota"])} 点/月 ·
@@ -326,8 +337,7 @@ body{{--accent:{accent}}}
 </main>
 
 <footer><div class="wrap">
-  <span><a href="team-{esc(p["owner"])}.html">← {esc(p["owner"])} 组报告</a> ·
-    <a href="token_credits_report.html">部门报告</a></span>
+  <span>{f'<a href="team-{esc(p["owner"])}.html">← {esc(p["owner"])} 组报告</a> · ' if role == "full" else ""}<a href="token_credits_report.html">系数与计费口径（基础版）</a></span>
   <span>数据截至 {meta["data_end"]} · 生成于 {meta["generated_at"]} · 作息为计费桶推断，非考勤</span>
 </div></footer>
 <script>{JS}</script></body></html>"""

@@ -94,24 +94,36 @@ python3 scripts/run.py --tag evening   # → output/2026-10-20-evening/
 
 ```
 output/2026-10-20/
-├── token_credits_report.html      部门报告（13 节，含「人员行为总览」+ 个人报告索引）
-├── team-高莉.html                  项目组报告（每组一份，含「成员作息与选型对比」）
+├── token_credits_report.html      基础版：系数与计费口径（所有人可阅，无组/人/金额）
+├── management_report.html         管理版：组总览/人员行为/订阅/结余/采购（限部门老板）
+├── team-高莉.html                  项目组报告（限本组负责人，含成员作息与选型对比）
 ├── team-乐薇.html
 ├── …
-├── member-王学臣.html               个人行为画像（每人一份：模型偏好/占比、作息热力图、
+├── member-王学臣.html               个人行为画像（人手一份：模型偏好/占比、作息热力图、
 ├── member-高军辉.html               活跃天数与时长、夜间/周末占比、分位对比、给 ta 的建议）
 ├── …
 ├── token_credits_coefficients.xlsx  逐人 sheet 含活跃天数/夜间%/典型时段/模式
 ├── token_credits_coefficients.md
-├── recipients.csv                 发邮件用：… / member_report / send_dept
-├── manifest.json                  自检结果 + 配置哈希
-├── data/analysis.json             结构化数据（可给别的系统消费）
-└── raw/usage_detail.csv           全量明细
+├── recipients.csv                   分发清单：basic_report / report / member_report / mgmt_report
+├── manifest.json                    自检结果 + 配置哈希
+├── data/analysis.json               结构化数据（可给别的系统消费）
+└── raw/usage_detail.csv             全量明细
 ```
 
 所有 HTML 都是单文件、无外部依赖，可直接当邮件附件。
 
-`recipients.csv` 里 `send_dept=true` 的是组 owner（附部门报告）；每行都带 `member_report`（本人画像报告）。
+### 权限分层
+
+| 内容 | member（所有人） | owner（组长） | boss（部门老板） |
+|---|---|---|---|
+| 基础版 token_credits_report.html | ✓ | ✓ | ✓ |
+| 自己的画像 member-*.html | ✓ 仅自己 | ✓ | ✓ |
+| 组报告 team-*.html | ✗ | ✓ 仅本组 | ✓ |
+| 管理版 management_report.html | ✗ | ✗ | ✓ |
+
+- 基础版不含任何组名、人名与金额（s5 自检防泄漏）；个人画像发本人为裁剪版（相似同事匿名化）
+- 管理版收件人在 `config.yaml` 的 `notify.boss_recipients` 配置，写入 recipients.csv 的 boss 行
+- 上线后按登录身份传 role 即可复用同一套渲染代码做访问控制
 
 ### 个人画像怎么看
 

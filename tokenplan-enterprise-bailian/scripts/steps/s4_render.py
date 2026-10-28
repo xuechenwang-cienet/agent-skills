@@ -10,8 +10,26 @@ from lib.render_group import PALETTE, render as render_group
 from lib.render_member import render as render_member
 
 
+def _boss_rows(cfg):
+    """config notify.boss_recipients → recipients 行。支持 "邮箱" 或 {"name":…, "email":…}。"""
+    out = []
+    for i, r in enumerate(cfg.notify.get("boss_recipients") or []):
+        if isinstance(r, dict):
+            out.append({"name": r.get("name") or r.get("email", f"boss{i + 1}"),
+                        "email": r.get("email", "")})
+        elif isinstance(r, str) and r.strip():
+            email = r.strip()
+            out.append({"name": email.split("@", 1)[0], "email": email})
+    return out
+
+
 def _recipients(A, cfg, path):
-    """各组收件人清单：owner 附带部门报告+组报告，成员附本人报告+组报告。"""
+    """报告分发清单（按角色分层）：
+
+    member 行：基础版 + 本人画像
+    owner 行 ：基础版 + 本组报告 + 本人画像
+    boss 行  ：基础版 + 管理版
+    """
     rows = []
     for g in A["groups"]:
         owner = g["name"]
@@ -20,26 +38,32 @@ def _recipients(A, cfg, path):
         for p in members:
             if not p["email"]:
                 continue
+            is_owner = p["name"] == owner
             rows.append({
                 "group": owner,
                 "owner": owner,
                 "name": p["name"],
                 "email": p["email"],
-                "role": "owner" if p["name"] == owner else "member",
+                "role": "owner" if is_owner else "member",
                 "report": f"team-{owner}.html",
-                "dept_report": "token_credits_report.html",
+                "basic_report": "token_credits_report.html",
+                "mgmt_report": "",
                 "member_report": f"member-{p['key']}.html",
-                "send_dept": "true" if p["name"] == owner else "false",
+                "send_mgmt": "false",
             })
-        if not any(r["name"] == owner and r["group"] == owner for r in rows):
-            # owner 自己不在组里（或没邮箱），补一行
-            rows.append({"group": owner, "owner": owner, "name": owner, "email": "",
-                         "role": "owner", "report": f"team-{owner}.html",
-                         "dept_report": "token_credits_report.html",
-                         "member_report": "", "send_dept": "true"})
+    for b in _boss_rows(cfg):
+        rows.append({
+            "group": "(部门)", "owner": "(boss)", "name": b["name"], "email": b["email"],
+            "role": "boss", "report": "",
+            "basic_report": "token_credits_report.html",
+            "mgmt_report": "management_report.html",
+            "member_report": "",
+            "send_mgmt": "true",
+        })
     with open(path, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.DictWriter(f, fieldnames=["group", "owner", "name", "email", "role",
-                                          "report", "dept_report", "member_report", "send_dept"])
+                                          "report", "basic_report", "mgmt_report",
+                                          "member_report", "send_mgmt"])
         w.writeheader()
         w.writerows(rows)
     return len(rows)
@@ -142,9 +166,16 @@ def run(cfg, A, out_dir, log):
     total = A["meta"]["total_credits"] or 1
 
     dept = os.path.join(out_dir, "token_credits_report.html")
-    open(dept, "w", encoding="utf-8").write(render_dept(A, cfg))
+    open(dept, "w", encoding="utf-8").write(render_dept(A, cfg, role="basic"))
     files.append(dept)
-    log(f"  ✓ {os.path.basename(dept)}  {os.path.getsize(dept) // 1024} KB")
+    log(f"  ✓ {os.path.basename(dept)}  {os.path.getsize(dept) // 1024} KB  (基础版)")
+
+    if cfg.output.get("management_report", True):
+        mgmt = os.path.join(out_dir, "management_report.html")
+        open(mgmt, "w", encoding="utf-8").write(render_dept(A, cfg, role="boss"))
+        files.append(mgmt)
+        n_boss = len(_boss_rows(cfg))
+        log(f"  ✓ {os.path.basename(mgmt)}  {os.path.getsize(mgmt) // 1024} KB  (管理版 · {n_boss} 位收件人)")
 
     if cfg.output.get("group_reports", True):
         for i, g in enumerate(A["groups"]):

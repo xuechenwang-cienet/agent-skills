@@ -25,6 +25,27 @@
   （整行移动后的单元格引用残留、批量"全部失效"链接声明未逐条实测）已沉淀进案例库。
 - 离线自测 `doc-review/tests/selftest.sh`（11 项，PASS=11）。
 
+## tokenplan-enterprise-bailian 0.3.0 — 2026-10-28
+
+报告按受众分层，权限边界即文件边界。
+
+- **部门报告拆分为两份**：
+  - `token_credits_report.html`（基础版，所有人）：系数总表、高峰/平峰、三种 cache、上下文分档、
+    原始类型、配套文件——不含任何组名、人名与金额
+  - `management_report.html`（管理版，仅 boss）：部门组总览、人员行为总览（含个人报告索引）、
+    模型横向、组×模型矩阵、订阅容量、席位结余、技术诊断与采购测算，每节带「限管理者」徽章
+- **个人画像分角色渲染**：发本人为裁剪版（相似同事匿名化为「另有 N 位结构相近」、无组报告链接、
+  页脚只挂基础版）；完整版供管理者使用
+- **分发**：recipients.csv 列改为 `basic_report / report / mgmt_report / member_report`（替代
+  `dept_report/send_dept`，邮件合并脚本需同步调整）；boss 行由 `notify.boss_recipients`
+  配置生成（支持邮箱字符串或 {name, email}）
+- **自检**：新增「基础版报告不含管理节」哨兵扫描（警告级）
+- **顺带修复**：个人报告「选型降级」省钱估算把 token 数当单价用，数额虚高数个量级——改为
+  `tokens × 单价差 / 1e6`，并验证所有人估算 ≤ 本人总消耗
+- `render_dept.render(A, cfg, role)` 按节函数化组装（`basic`/`boss`），上线后按登录身份传
+  role 即可复用为访问控制点；`config.sample.yaml` 新增 `output.management_report` 与
+  `notify.boss_recipients`
+
 ## tokenplan-enterprise-bailian 0.2.1 — 2026-10-28
 
 成员身份 key 改为「**中文名 > 钉联名 > 邮箱前缀 > hrid > 英文名**」回退链，撞名自动加 `-2` 后缀并告警。
