@@ -4,6 +4,7 @@ from __future__ import annotations
 import collections
 import html
 
+from .render_util import hbars
 from .ui import CSS, JS
 
 PER = {"peak": ("PEAK", "高峰"), "offpeak": ("OFFPEAK", "平峰"), "flat": ("FLAT", "不分时段")}
@@ -11,6 +12,124 @@ COLS = ["token_in", "token_out", "cache", "cache_read", "cache_write_5m", "cache
 ROLE_LABEL = {"token_in": "token in", "token_out": "token out", "cache": "cache",
               "cache_read": "cache read", "cache_write_5m": "cache write 5m",
               "cache_write_1h": "cache write 1h"}
+
+_PAT_CLS = {"白天型": "ok", "持续稳定": "ok", "混合型": "flat",
+            "早晚型": "warn", "夜间型": "warn", "集中攻坚": "full",
+            "轻量偶发": "none", "零用量": "none", "未开通": "none"}
+
+
+def _quartile(vals, q):
+    """分位值（线性插值）。空集返回 None。"""
+    if not vals:
+        return None
+    s = sorted(vals)
+    i = (len(s) - 1) * q
+    lo = int(i)
+    hi = min(lo + 1, len(s) - 1)
+    return s[lo] + (s[hi] - s[lo]) * (i - lo)
+
+
+def _behavior_section(A, cfg) -> str:
+    """07 人员行为总览：部门级分布 + 分位阈值 + 个人报告索引（不列个人排名）。"""
+    people = A["people"]
+    beh = A.get("behavior") or {}
+    denom = A["meta"]["total_credits"] or 1
+    hours_labels = [str(h) if h % 3 == 0 else "" for h in range(24)]
+    hc = beh.get("hour_c") or [0.0] * 24
+    hp = beh.get("hour_people") or [0] * 24
+    busiest = beh.get("busiest_hour", max(range(24), key=lambda h: sum(hc)))
+    quiet = beh.get("quiet_core_hour")
+    used = [p for p in people if p["credits"] > 0]
+    idle = [p for p in people if p["accounts"] and p["credits"] <= 0]
+    tiers = beh.get("tiers") or {}
+
+    def chips(d, cls_map=None):
+        return " ".join(f'<span class="chip {(cls_map or {}).get(k, "none")}">{html.escape(str(k))} × {v}</span>'
+                        for k, v in sorted(d.items(), key=lambda kv: -kv[1])) or "—"
+
+    weekend_c = sum(x["credits"] for p in used for x in p["profile"]["days"] if x["kind"] == "weekend")
+    cards = f'''
+  <div class="grid3 rv" style="grid-template-columns:repeat(4,1fr);margin-bottom:22px">
+    <div class="card hot"><span class="big">{beh.get("night_share", 0):.1f}<span>%</span></span><h3>夜间用量占比 22–08</h3>
+      <p>{f(sum(hc[22:]) + sum(hc[:8]))} 点发生在夜间。定时批处理适合放这里（deepseek 平峰半价）。</p></div>
+    <div class="card warm"><span class="big">{beh.get("weekend_share", 0):.1f}<span>%</span></span><h3>周末用量占比</h3>
+      <p>{f(weekend_c)} 点在周末产生。</p></div>
+    <div class="card cool"><span class="big">{busiest:02d}<span>:00</span></span><h3>最活跃时段</h3>
+      <p>{busiest:02d}:00–{busiest + 1:02d}:00 消耗 {f(hc[busiest])} 点、{hp[busiest]} 人同时在线；
+      {"核心时段最安静的是 " + format(quiet, "02d") + ":00" if quiet is not None else "—"}</p></div>
+    <div class="card"><span class="big">{len(idle)}<span>席</span></span><h3>沉睡席位</h3>
+      <p>已开通但本月零调用，另有 {tiers.get("偶发", 0)} 席偶发使用；沉睡席位 {f(sum(p["seat_fee"] for p in idle))}/月 空转。</p></div>
+  </div>'''
+
+    charts = f'''
+  <p class="heat-cap rv">部门点数分布（Credits / 小时）</p>
+  <div class="rv">{hbars(hc, labels=hours_labels, fmt=lambda v: f'{v:,.0f} 点')}</div>
+  <p class="heat-cap rv" style="margin-top:20px">同时在线人数（有调用的人数 / 小时）</p>
+  <div class="rv">{hbars(hp, labels=hours_labels, rgb="#5fc9a5", fmt=lambda v: f'{v:,.0f} 人')}</div>'''
+
+    def q3(key, fmt_fn, unit=""):
+        vals = []
+        for p in used:
+            v = p["profile"][key]
+            if v is not None:
+                vals.append(v)
+        return (f'P25 <b>{fmt_fn(_quartile(vals, .25))}</b> · P50 <b>{fmt_fn(_quartile(vals, .5))}</b> · '
+                f'P75 <b>{fmt_fn(_quartile(vals, .75))}</b> {unit}（n={len(vals)}）')
+
+    thr_kv = f'''
+  <div class="kv rv" style="margin-top:22px">
+    <div>活跃天数分位</div><div>{q3("active_days", lambda v: "—" if v is None else f"{v:.0f}")}</div>
+    <div>日均活跃分钟分位</div><div>{q3("avg_min_day", lambda v: "—" if v is None else f"{v:.0f}")}</div>
+    <div>夜间占比分位</div><div>{q3("night_share", lambda v: "—" if v is None else f"{v:.1f}", "%")}</div>
+    <div>活跃度分档</div><div>{chips(tiers, {"高频": "ok", "稳定": "ok", "偶发": "warn", "沉睡": "none"})}
+      （高频 ≥ 80% 工作日样本，稳定 ≥ 50%，偶发 &gt; 0，沉睡 = 0）</div>
+    <div>模式分布</div><div>{chips(beh.get("patterns") or {}, _PAT_CLS)}</div>
+  </div>'''
+
+    cl_rows = "".join(
+        f'<tr><td class="m">{esc(c["model"])}</td><td class="num">{c["count"]}<span class="dim" style="font-size:11px"> 人</span></td>'
+        f'<td class="num">{f(c["credits"])}</td><td class="num dim">{c["credits"] / denom * 100:.1f}%</td></tr>'
+        for c in (beh.get("clusters") or [])[:8])
+    clusters_html = f'''
+  <h3 class="rv" style="font-family:var(--sans);font-size:14px;font-weight:600;margin:28px 0 10px">模型偏好人群（按每人主力模型聚类）</h3>
+  <div class="tbl-wrap rv" style="max-height:none"><table>
+    <thead><tr><th>主力模型</th><th>人数</th><th>点数</th><th>占部门</th></tr></thead>
+    <tbody>{cl_rows}</tbody></table></div>'''
+
+    idx_rows = []
+    for p in sorted(people, key=lambda x: -x["credits"]):
+        pr = p["profile"]
+        shared = f'<span class="shared">共享 · {esc(p["shared_with"])}</span>' if p["shared_with"] else ""
+        night_html = (f'<span style="color:var(--ember)">{pr["night_share"]:.1f}%</span>'
+                      if pr["night_share"] >= 25 else f'{pr["night_share"]:.1f}%')
+        idx_rows.append(f'''<tr>
+          <td class="m"><a href="member-{esc(p["key"])}.html">{esc(p["name"])}</a>{shared}</td>
+          <td class="l dim">{esc(p["owner"])}</td>
+          <td class="num">{f(p["credits"])}</td><td class="num dim">{p["credits"] / denom * 100:.1f}%</td>
+          <td class="num">{pr["active_days"]}</td><td class="num dim">{pr["avg_min_day"]:.0f}</td>
+          <td class="num">{night_html}</td>
+          <td class="num dim">{fnum(pr["mix_price"])}</td>
+          <td class="l dim" style="font-family:var(--mono);font-size:11px">{esc(p["top_model"])}</td>
+          <td class="num dim"><span class="chip {_PAT_CLS.get(p["pattern"], "flat")}">{esc(p["pattern"])}</span></td></tr>''')
+    index_html = f'''
+  <h3 class="rv" style="font-family:var(--sans);font-size:14px;font-weight:600;margin:32px 0 10px">个人报告索引（{len(people)} 份）</h3>
+  <div class="controls"><input class="search" type="search" data-target="#member-index"
+       placeholder="筛选成员 / 组 / 模型…" aria-label="筛选成员"><span class="hint"></span></div>
+  <div class="tbl-wrap" id="member-index" data-filterable style="max-height:52vh"><table>
+    <thead><tr><th>姓名</th><th>组</th><th>本月点数</th><th>占比</th><th>活跃天数</th>
+      <th>日均活跃分钟</th><th>夜间</th><th>混合单价 / 1M</th><th>主力模型</th><th>模式</th></tr></thead>
+    <tbody>{''.join(idx_rows)}</tbody></table></div>'''
+
+    return f'''<section id="behavior"><div class="wrap">
+  <div class="sec-head"><span class="sec-num">07</span><h2>人员行为总览</h2></div>
+  <p class="sec-note">由<b>分钟级计费桶</b>推断：分钟内有调用即计活跃，<b>不等同于考勤</b>；占比基于完整日。
+  本节只给部门级分布与分位阈值，不做个人排名；逐人明细见下方索引（每份报告含模型偏好、作息热力图、使用节奏与建议）。</p>
+  {cards}
+  {charts}
+  {thr_kv}
+  {clusters_html}
+  {index_html}
+</div></section>'''
 
 
 def esc(s):
@@ -235,8 +354,8 @@ def render(A, cfg) -> str:
 <nav class="toc"><div class="wrap">
   <a href="#rates" class="on">系数总表</a><a href="#period">高峰/平峰</a><a href="#cache">三种 cache</a>
   <a href="#context">上下文分档</a><a href="#raw">原始类型</a><a href="#groups">组用量</a>
-  <a href="#models">模型横向</a><a href="#matrix">组×模型</a><a href="#subs">订阅容量</a>
-  <a href="#seat">席位结余</a><a href="#advice">诊断建议</a>
+  <a href="#behavior">人员行为</a><a href="#models">模型横向</a><a href="#matrix">组×模型</a>
+  <a href="#subs">订阅容量</a><a href="#seat">席位结余</a><a href="#advice">诊断建议</a>
 </div></nav>
 
 <main>
@@ -308,8 +427,10 @@ def render(A, cfg) -> str:
   {unmapped_html}
 </div></section>
 
+{_behavior_section(A, cfg)}
+
 <section id="models"><div class="wrap">
-  <div class="sec-head"><span class="sec-num">07</span><h2>模型横向比较</h2></div>
+  <div class="sec-head"><span class="sec-num">08</span><h2>模型横向比较</h2></div>
   <p class="sec-note">三层视角：<b>用量与成本</b>（谁在花钱）、<b>单价</b>（同样的 1M token 谁更便宜）、<b>token 结构</b>（钱花在输入、输出还是缓存上）。</p>
 
   <h3 style="font-family:var(--sans);font-size:14px;font-weight:600;margin:26px 0 10px">7.1 用量与成本</h3>
@@ -332,14 +453,14 @@ def render(A, cfg) -> str:
 </div></section>
 
 <section id="matrix"><div class="wrap">
-  <div class="sec-head"><span class="sec-num">08</span><h2>组 × 模型矩阵</h2></div>
+  <div class="sec-head"><span class="sec-num">09</span><h2>组 × 模型矩阵</h2></div>
   <p class="sec-note">格子内为该组在这个模型上的点数消耗，颜色越亮表示该组在此模型的投入越大。</p>
   <div class="tbl-wrap" style="max-height:none;padding:10px"><table class="matrix">
     <thead><tr><th>模型</th>{mh}</tr></thead><tbody>{''.join(mrow)}</tbody></table></div>
 </div></section>
 
 <section id="subs"><div class="wrap">
-  <div class="sec-head"><span class="sec-num">09</span><h2>当前订阅与容量</h2></div>
+  <div class="sec-head"><span class="sec-num">10</span><h2>当前订阅与容量</h2></div>
   <p class="sec-note">以下为订阅概览接口实测值（{sub.get("fetched_at", "—")}），非推算。
     订阅周期 <b>{_ts(sub.get("start"))} → {_ts(sub.get("end"))}</b>，席位重置 <b>{_ts(sub.get("refresh"))}</b>。</p>
   <div class="grid3 rv" style="margin-bottom:18px">
@@ -363,7 +484,7 @@ def render(A, cfg) -> str:
 </div></section>
 
 <section id="seat"><div class="wrap">
-  <div class="sec-head"><span class="sec-num">10</span><h2>月末席位结余预测</h2></div>
+  <div class="sec-head"><span class="sec-num">11</span><h2>月末席位结余预测</h2></div>
   <p class="sec-note">席位额度 <b>{_ts(sub.get("refresh"))} 重置，当月未用尽的部分不结转</b>，所以月末结余等同于已付未用的成本。</p>
   <div class="kv rv" style="margin-bottom:22px">
     <div>估算方法 ①</div><div>剩余天数 = <b>{cal["remaining"].get("total", 0)} 天</b>（{cal["remaining"].get("workday", 0)} 个工作日 + {cal["remaining"].get("weekend", 0)} 个周末{("，含 " + str(cal["remaining"]["holiday"]) + " 天假日") if cal["remaining"].get("holiday") else "，无法定节假日"}）。</div>
@@ -388,7 +509,7 @@ def render(A, cfg) -> str:
 </div></section>
 
 <section id="advice"><div class="wrap">
-  <div class="sec-head"><span class="sec-num">11</span><h2>技术诊断与建议</h2></div>
+  <div class="sec-head"><span class="sec-num">12</span><h2>技术诊断与建议</h2></div>
   <p class="sec-note">全部基于本月全量明细计算，收益按点数计。</p>
   <div class="grid3 rv" style="margin-bottom:22px">
     <div class="card warm"><span class="big">{peak_ratio:.2f}%</span><h3>平峰利用率</h3>
@@ -440,9 +561,11 @@ def render(A, cfg) -> str:
 </div></section>
 
 <section id="files" style="border-bottom:0"><div class="wrap">
-  <div class="sec-head"><span class="sec-num">12</span><h2>配套文件</h2></div>
+  <div class="sec-head"><span class="sec-num">13</span><h2>配套文件</h2></div>
   <div class="files">
     {''.join(f'<div class="file"><span class="ext">组报告</span><span class="nm">team-{esc(g["name"])}.html</span><span class="ds">{g["count"]} 个席位 · {f(g["credits"])} 点</span></div>' for g in groups)}
+    {''.join(f'<div class="file"><span class="ext">个人报告</span><span class="nm">member-{esc(p["key"])}.html</span><span class="ds">{esc(p["name"])} · {f(p["credits"])} 点</span></div>' for p in people[:8])}
+    <div class="file"><span class="ext">…</span><span class="nm">member-*.html × {len(people)}</span><span class="ds">完整索引见「人员行为总览」</span></div>
     <div class="file"><span class="ext">XLSX</span><span class="nm">token_credits_coefficients.xlsx</span><span class="ds">系数 / 原始类型 / 成员 / 模型</span></div>
     <div class="file"><span class="ext">CSV</span><span class="nm">raw/usage_detail.csv</span><span class="ds">全量原始明细 {meta["rows"]:,} 行</span></div>
     <div class="file"><span class="ext">CSV</span><span class="nm">recipients.csv</span><span class="ds">各组收件人清单（姓名 / 邮箱 / 角色）</span></div>

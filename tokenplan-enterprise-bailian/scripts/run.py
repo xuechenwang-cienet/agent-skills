@@ -125,7 +125,19 @@ def main():
         if a.from_step in ("s1", "s2", "s3"):
             A = s3.run(cfg, csv_path, sub, month, out_dir, log)
         else:
-            A = json.load(open(os.path.join(out_dir, "data", "analysis.json"), encoding="utf-8"))
+            a_path = os.path.join(out_dir, "data", "analysis.json")
+            # analysis.json 缺失或为旧版本产物（无行为画像字段）→ 用本地明细重跑 s3
+            need_s3 = True
+            if os.path.exists(a_path):
+                try:
+                    A = json.load(open(a_path, encoding="utf-8"))
+                    need_s3 = not A.get("behavior") or not A["people"] or "profile" not in A["people"][0]
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    need_s3 = True
+            if need_s3:
+                log("· analysis.json " + ("缺失" if not os.path.exists(a_path) else "缺少行为画像字段")
+                    + "，用本地明细重跑 s3 …")
+                A = s3.run(cfg, csv_path, sub, month, out_dir, log)
 
         # ---------- s4 ----------
         files = s4.run(cfg, A, out_dir, log)

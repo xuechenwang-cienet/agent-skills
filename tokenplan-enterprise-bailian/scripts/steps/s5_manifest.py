@@ -57,8 +57,37 @@ def run(cfg, A, files, out_dir, log, extra=None):
     chk("组报告数量 = 项目组数", n_group == len(A["groups"]),
         f"{n_group} vs {len(A['groups'])}")
 
+    # 10. 个人报告数量（警告级：member_reports 关闭时跳过）
+    if cfg.output.get("member_reports", True):
+        n_member = len([f for f in files if os.path.basename(f).startswith("member-")])
+        n_should = len([p for p in A["people"] if p["accounts"]])
+        chk("个人报告数量 = 有账号席位数", n_member == n_should, f"{n_member} vs {n_should}")
+
+    # 11. 行为分布合计 = 点数（警告级，防画像采集漏行）
+    s_hours = sum(sum(p["profile"]["hours_c"]) + p["profile"]["partial_credits"] for p in A["people"])
+    s_daily = sum(sum(x["credits"] for x in p["profile"]["days"]) + p["profile"]["partial_credits"]
+                  for p in A["people"])
+    ok_h = abs(s_hours - A["meta"]["total_credits"]) < 0.05
+    ok_d = abs(s_daily - A["meta"]["total_credits"]) < 0.05
+    chk("行为分布合计 = 部门总点数", ok_h and ok_d,
+        f"小时 {s_hours:,.2f} / 日 {s_daily:,.2f} vs {A['meta']['total_credits']:,.2f}")
+
+    # 12. 时段口径（peak/offpeak 后缀 vs 时间戳小时，警告级）
+    beh = A.get("behavior") or {}
+    tz = beh.get("tz") or {}
+    chk("peak/offpeak 与时间戳一致", tz.get("ratio", 0) < 2,
+        f"不一致 {tz.get('mismatch', 0)}/{tz.get('checked', 0)}"
+        f"（{tz.get('ratio', 0):.2f}%）" if tz.get("checked") else "无样本")
+
+    b = A.get("behavior") or {}
+    n_member = len([f for f in files if os.path.basename(f).startswith("member-")])
+    log(f"  · 行为：夜间 {b.get('night_share', 0):.1f}% · 周末 {b.get('weekend_share', 0):.1f}% · "
+        f"最活跃 {b.get('busiest_hour', 0):02d}:00 · 个人报告 {n_member} 份")
+
     ok = all(c["ok"] for c in checks if c["name"] not in
-             ("Bailian 账号全部映射到名册", "目标月份日历已核对", "下月日历已核对"))
+             ("Bailian 账号全部映射到名册", "目标月份日历已核对", "下月日历已核对",
+              "个人报告数量 = 有账号席位数", "行为分布合计 = 部门总点数",
+              "peak/offpeak 与时间戳一致"))
 
     manifest = {
         "ok": ok,

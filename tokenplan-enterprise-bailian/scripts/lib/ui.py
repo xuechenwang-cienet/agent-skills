@@ -190,6 +190,37 @@ tbody tr.hl td:first-child{box-shadow:inset 2px 0 0 var(--ember)}
   text-transform:uppercase;color:var(--dim2)}
 @media (max-width:920px){.pr,.pr-h{grid-template-columns:118px 1fr 50px 1fr 50px;gap:6px}}
 
+/* ---- 热力网格（7×24 / 人×24 / 日×24 通用） ---- */
+.heat{display:grid;grid-template-columns:var(--roww,64px) repeat(var(--cols,24),var(--cell,15px));
+  gap:var(--gap,2px);align-items:stretch;font-family:var(--mono);overflow-x:auto;padding-bottom:4px}
+.heat>.hgl{font-size:10.5px;color:var(--dim);white-space:nowrap;align-self:center;padding-right:6px;text-align:right}
+.heat>.hgl.hx{border:0}
+.heat>.hgx{font-size:9px;color:var(--dim2);text-align:center;align-self:end;padding-bottom:2px}
+.heat>.hgx.b{color:var(--dim)}
+.heat>i{display:block;height:var(--cell,15px);border-radius:1px;min-width:var(--cell,15px)}
+.heat-wrap{margin:14px 0 6px}
+.heat-cap{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;color:var(--dim2);text-transform:uppercase;margin-bottom:8px}
+
+/* ---- 24h 细柱 ---- */
+.hbars{display:grid;align-items:stretch;gap:3px;border-bottom:1px solid var(--line)}
+.hbars .hcol{position:relative;height:100%}
+.hbars .hcol i{position:absolute;bottom:0;left:0;width:100%;border-radius:1px 1px 0 0;transition:filter .2s}
+.hbars .hcol:hover i{filter:brightness(1.45)}
+.haxis{display:grid;gap:3px;font-family:var(--mono);font-size:9px;color:var(--dim2);margin-top:5px;text-align:center}
+.haxis .b{color:var(--dim);font-weight:400}
+
+/* ---- 分位条 ---- */
+.pctx{display:grid;grid-template-columns:170px 1fr 110px 52px;gap:12px;align-items:center;
+  padding:9px 2px;border-bottom:1px solid rgba(255,255,255,.045)}
+.pctx:hover{background:color-mix(in srgb,var(--accent) 5%,transparent)}
+.pctx .pn{font-family:var(--serif);font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pctx .pt{position:relative;height:8px;background:rgba(255,255,255,.05);border-radius:1px;overflow:visible}
+.pctx .pt i{display:block;height:100%;border-radius:1px}
+.pctx .pt i.mk{position:absolute;top:-3px;width:2px;height:14px;background:var(--tx);border-radius:0}
+.pctx .pv{font-family:var(--mono);font-size:12px;text-align:right;font-variant-numeric:tabular-nums}
+
+@media (max-width:920px){.pctx{grid-template-columns:110px 1fr 84px 42px;gap:7px}}
+
 footer{padding:38px 0 66px;color:var(--dim2);font-size:12.4px;font-family:var(--mono);letter-spacing:.04em}
 footer .wrap{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap}
 
@@ -237,6 +268,18 @@ JS = r"""
       if(cnt)cnt.textContent=n+' / '+rows.length+' 行';};
     q.addEventListener('input',f);f();
   }
+  /* 通用：带 data-target 的搜索框只过滤本节内指定表格；缺省过滤本节第一个可过滤表格 */
+  document.querySelectorAll('input.search[data-target]').forEach(inp=>{
+    const scope=inp.closest('section')||document;
+    const wrap=scope.querySelector(inp.dataset.target);
+    if(!wrap)return;
+    const rows=[...wrap.querySelectorAll('tbody tr')];
+    const cnt=inp.parentElement.querySelector('.hint');
+    const f=()=>{const v=inp.value.trim().toLowerCase();let n=0;
+      rows.forEach(tr=>{const hit=!v||tr.innerText.toLowerCase().includes(v);tr.style.display=hit?'':'none';if(hit)n++;});
+      if(cnt)cnt.textContent=n+' / '+rows.length+' 行';};
+    inp.addEventListener('input',f);f();
+  });
   const u1=document.getElementById('u1'),u2=document.getElementById('u2');
   if(u1&&u2){
     const set=m=>{u1.setAttribute('aria-pressed',m==='c');u2.setAttribute('aria-pressed',m==='t');

@@ -1,13 +1,13 @@
 # tokenplan-enterprise-bailian
 
-阿里云百炼 **Token Plan** 组织用量分析：一条命令生成部门报告 + 各组报告。
+阿里云百炼 **Token Plan** 组织用量分析：一条命令生成部门报告 + 各组报告 + 每人一份的行为画像报告。
 
 ```bash
 cd tokenplan-enterprise-bailian
 python3 scripts/run.py          # 首次需要确认四项配置
 ```
 
-约 30 秒后，`output/<今天>/` 下会有 8 份 HTML + 系数表 + 收件人清单。
+约 30 秒后，`output/<今天>/` 下会有部门报告、各组报告、36+ 份个人画像报告、系数表和收件人清单。
 
 > 仓库里只带 **sample 配置**。第一次用先复制两份：
 > ```bash
@@ -94,13 +94,16 @@ python3 scripts/run.py --tag evening   # → output/2026-10-20-evening/
 
 ```
 output/2026-10-20/
-├── token_credits_report.html      部门报告（12 节）
-├── team-高莉.html                  项目组报告（每组一份）
+├── token_credits_report.html      部门报告（13 节，含「人员行为总览」+ 个人报告索引）
+├── team-高莉.html                  项目组报告（每组一份，含「成员作息与选型对比」）
 ├── team-乐薇.html
 ├── …
-├── token_credits_coefficients.xlsx
+├── member-王学臣.html               个人行为画像（每人一份：模型偏好/占比、作息热力图、
+├── member-高军辉.html               活跃天数与时长、夜间/周末占比、分位对比、给 ta 的建议）
+├── …
+├── token_credits_coefficients.xlsx  逐人 sheet 含活跃天数/夜间%/典型时段/模式
 ├── token_credits_coefficients.md
-├── recipients.csv                 发邮件用：group / owner / name / email / role / report
+├── recipients.csv                 发邮件用：… / member_report / send_dept
 ├── manifest.json                  自检结果 + 配置哈希
 ├── data/analysis.json             结构化数据（可给别的系统消费）
 └── raw/usage_detail.csv           全量明细
@@ -108,7 +111,17 @@ output/2026-10-20/
 
 所有 HTML 都是单文件、无外部依赖，可直接当邮件附件。
 
-`recipients.csv` 里 `send_dept=true` 的是组 owner（附部门报告），其余成员只附本组报告。
+`recipients.csv` 里 `send_dept=true` 的是组 owner（附部门报告）；每行都带 `member_report`（本人画像报告）。
+
+### 个人画像怎么看
+
+- **模型偏好**：主力模型及占比、集中度（HHI）、个人混合单价（点数/1M tokens）——选型贵不贵一眼可见
+- **工作时段**：24h 点数分布 vs 活跃分钟分布、周内 × 24 小时热力图、核心/晚间/夜间/周末四段占比
+- **使用节奏**：整月「日 × 小时」日历热力图、活跃天数、最长连击、峰值日、会话数与平均时长
+- **横向对比**：与部门分位比较（刻意不做排行榜），附组内模型结构最接近的 3 位同事
+
+> 口径：作息由**分钟级计费桶**推断（该分钟有调用即活跃），代表「何时在用」，**不等同于考勤**；
+> 所有占比基于完整日。`output.member_reports: false` 可关闭个人报告。
 
 ---
 

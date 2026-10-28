@@ -5,11 +5,13 @@
 """
 from __future__ import annotations
 
+import bisect
 import collections
 import csv
 import datetime as dt
 import math
 import re
+import statistics
 
 from .calendar_cn import Calendar
 
@@ -36,9 +38,291 @@ def _d(s: str) -> dt.date:
     return dt.date.fromisoformat(s[:10])
 
 
+def _hhmm(s: str) -> int:
+    return int(s[:2]) * 60 + int(s[3:5])
+
+
+def _minstr(m: int) -> str:
+    return f"{m // 60:02d}:{m % 60:02d}"
+
+
+def _pctile(values: list, v):
+    """v 在 values 中的分位（0–100，越大越靠前）。v 为 None 返回 None。"""
+    if v is None:
+        return None
+    vals = sorted(values)
+    below = bisect.bisect_left(vals, v)
+    return below / max(len(vals) - 1, 1) * 100
+
+
+# ---------------- 行为画像（完整日口径） ----------------
+def _profile(d: dict, cal, month_start: dt.date, month_end: dt.date,
+             rate_end: dt.date, beh: dict) -> dict:
+    """把逐人采集的原始计数合成行为画像。
+
+    所有比例均基于「完整日」（剔除数据不完整的最后一天），避免早/晚占比被半天数据拉偏。
+    """
+    gap = int(beh.get("session_gap_min", 15))
+    n0, n1 = beh.get("night", [22, 8])
+    c0, c1 = beh.get("core", [9, 18])
+
+    hours_c = [d["hour_c"].get(h, 0.0) for h in range(24)]
+    hours_m = [len(s) for s in d["hour_m"]]
+    credits_fd = sum(hours_c)
+    denom = credits_fd or 1.0
+
+    night_h = list(range(n0, 24)) + list(range(0, n1))
+    night_c = sum(hours_c[h] for h in night_h)
+    evening_c = sum(hours_c[18:22])
+    core_c = sum(hours_c[c0:c1])
+    lunch_c = hours_c[12] + hours_c[13]
+
+    days, firsts, lasts, spans = [], [], [], []
+    active_minutes = active_days = 0
+    sessions = session_mins = session_max = 0
+    streak = best_streak = 0
+    peak_day, peak_c = None, 0.0
+    cur = month_start
+    while cur <= min(month_end, rate_end):
+        s = cur.isoformat()
+        c = d["daily_c"].get(s, 0.0)
+        mins = sorted(d["daily_min"].get(s, ()))
+        kind = cal.kind(cur)
+        first = last = None
+        if mins:
+            first, last = _hhmm(mins[0]), _hhmm(mins[-1])
+            firsts.append(first)
+            lasts.append(last)
+            spans.append(last - first + 1)
+            active_minutes += len(mins)
+            active_days += 1
+            seg = run = 1
+            for a, b in zip(mins, mins[1:]):
+                if _hhmm(b) - _hhmm(a) <= gap:
+                    run += 1
+                else:
+                    session_mins += run
+                    session_max = max(session_max, run)
+                    seg += 1
+                    run = 1
+            session_mins += run
+            session_max = max(session_max, run)
+            sessions += seg
+            streak += 1
+            best_streak = max(best_streak, streak)
+        else:
+            streak = 0
+        if mins and c > peak_c:
+            peak_day, peak_c = s, c
+        days.append({"date": s, "credits": c, "minutes": len(mins), "kind": kind,
+                     "first": _minstr(first) if first is not None else None,
+                     "last": _minstr(last) if last is not None else None})
+        cur += dt.timedelta(days=1)
+
+    wdh = [[0.0] * 24 for _ in range(7)]
+    for (w, h), v in d["wdh"].items():
+        wdh[w][h] = v
+    dh = [[d["dh"].get((x["date"], h), 0.0) for h in range(24)] for x in days]
+
+    mshare = []
+    mtot = sum(ms["credits"] for ms in d["mstat"].values()) or 1.0
+    for name, ms in d["mstat"].items():
+        mshare.append({
+            "name": name, "credits": ms["credits"], "share": ms["credits"] / mtot * 100,
+            "tokens": ms["tokens"], "rows": ms["rows"], "days": len(ms["days"]),
+            "mix_price": (ms["credits"] / ms["tokens"] * 1e6) if ms["tokens"] else None,
+            "inp": ms["inp"], "out": ms["out"], "cr": ms["cr"], "cw": ms["cw"]})
+    mshare.sort(key=lambda x: -x["credits"])
+
+    total_c = d["credits"] or 1.0
+    wd_c = sum(x["credits"] for x in days if x["kind"] == "weekend")
+    work_c = sum(x["credits"] for x in days if x["kind"] == "workday")
+    tokens_total = d["inp"] + d["out"] + d["cr"] + d["cw"]
+    latest = max(((x["date"], x["last"]) for x in days if x["last"]), key=lambda x: x[1], default=None)
+    earliest = min(((x["date"], x["first"]) for x in days if x["first"]), key=lambda x: x[1], default=None)
+
+    return {
+        "hours_c": hours_c, "hours_m": hours_m,
+        "night_share": night_c / denom * 100,
+        "evening_share": evening_c / denom * 100,
+        "core_share": core_c / denom * 100,
+        "lunch_share": lunch_c / denom * 100,
+        "weekend_share": (wd_c / (wd_c + work_c) * 100) if (wd_c + work_c) else None,
+        "active_days": active_days, "active_minutes": active_minutes,
+        "avg_min_day": active_minutes / active_days if active_days else 0.0,
+        "avg_span_h": (sum(spans) / len(spans) / 60) if spans else None,
+        "start_med": _minstr(int(statistics.median(firsts))) if firsts else None,
+        "end_med": _minstr(int(statistics.median(lasts))) if lasts else None,
+        "latest": latest, "earliest": earliest,
+        "streak_max": best_streak,
+        "peak_day": peak_day, "peak_credits": peak_c, "peak_share": peak_c / total_c * 100,
+        "sessions": sessions,
+        "session_avg_min": (session_mins / sessions) if sessions else 0.0,
+        "session_max_min": session_max,
+        "sessions_per_day": sessions / active_days if active_days else 0.0,
+        "days": days, "wdh": wdh, "dh": dh,
+        "models": mshare,
+        "top1_share": mshare[0]["share"] if mshare else 0.0,
+        "model_hhi": sum((x["share"]) ** 2 for x in mshare) / 10000.0,
+        "mix_price": (credits_fd / tokens_total * 1e6) if tokens_total else None,
+        "tokens_total": tokens_total,
+        "credits_per_active_hour": (credits_fd / (active_minutes / 60)) if active_minutes else None,
+        "tokens_per_active_min": (tokens_total / active_minutes) if active_minutes else None,
+        "partial_credits": d["partial_credits"],
+    }
+
+
+# ---------------- 模式标签 / 分位 / 相似同事 / 组与部门行为汇总 ----------------
+def _behavior_agg(ps: list) -> dict:
+    """组级 / 部门级行为汇总：24h 曲线、时段占比（点数加权）、模式分布。"""
+    hour_c = [0.0] * 24
+    hour_people = [0] * 24
+    csum = sum(p["credits"] for p in ps) or 1.0
+    wsum = 0.0
+    for p in ps:
+        pr = p["profile"]
+        for h in range(24):
+            hour_c[h] += pr["hours_c"][h]
+            if pr["hours_m"][h] > 0:
+                hour_people[h] += 1
+        wsum += (pr["weekend_share"] or 0) * p["credits"]
+    return {
+        "hour_c": hour_c, "hour_people": hour_people,
+        "night_share": sum(p["profile"]["night_share"] * p["credits"] for p in ps) / csum,
+        "evening_share": sum(p["profile"]["evening_share"] * p["credits"] for p in ps) / csum,
+        "core_share": sum(p["profile"]["core_share"] * p["credits"] for p in ps) / csum,
+        "weekend_share": wsum / csum,
+        "active_minutes": sum(p["profile"]["active_minutes"] for p in ps),
+        "active_days_med": statistics.median([p["profile"]["active_days"] for p in ps]) if ps else 0,
+        "patterns": dict(collections.Counter(p["pattern"] for p in ps)),
+    }
+
+
+def _behavior_pass(cfg, people: list, sample: dict, tz=None) -> dict:
+    accounts = [p for p in people if p["accounts"]]
+    used = [p for p in accounts if p["credits"] > 0]
+
+    metrics = {
+        "credits": [p["credits"] for p in used],
+        "night": [p["profile"]["night_share"] for p in used],
+        "weekend": [p["profile"]["weekend_share"] or 0 for p in used],
+        "active_days": [p["profile"]["active_days"] for p in used],
+        "minutes": [p["profile"]["avg_min_day"] for p in used],
+        "mix_price": [p["profile"]["mix_price"] for p in used if p["profile"]["mix_price"]],
+        "span": [p["profile"]["avg_span_h"] for p in used if p["profile"]["avg_span_h"]],
+    }
+    for p in people:
+        pr = p["profile"]
+        has = p["credits"] > 0
+        p["pct"] = {
+            "credits": _pctile(metrics["credits"], p["credits"]) if has else None,
+            "night": _pctile(metrics["night"], pr["night_share"]) if has else None,
+            "weekend": _pctile(metrics["weekend"], pr["weekend_share"] or 0) if has else None,
+            "active_days": _pctile(metrics["active_days"], pr["active_days"]) if has else None,
+            "minutes": _pctile(metrics["minutes"], pr["avg_min_day"]) if has else None,
+            "mix_price": _pctile(metrics["mix_price"], pr["mix_price"]) if pr["mix_price"] else None,
+            "span": _pctile(metrics["span"], pr["avg_span_h"]) if pr["avg_span_h"] else None,
+        }
+
+    # ---- 模式标签（单一标签，规则按顺序命中即止） ----
+    med_active = statistics.median(metrics["active_days"]) if metrics["active_days"] else 0
+    grp_avg = collections.defaultdict(lambda: [0.0, 0])
+    for p in people:
+        grp_avg[p["owner"]][0] += p["credits"]
+        grp_avg[p["owner"]][1] += 1
+    for p in people:
+        pr = p["profile"]
+        if not p["accounts"]:
+            p["pattern"] = "未开通"
+            continue
+        if p["credits"] <= 0:
+            p["pattern"] = "零用量"
+            continue
+        gavg = grp_avg[p["owner"]][0] / max(grp_avg[p["owner"]][1], 1)
+        ns, es, cs = pr["night_share"], pr["evening_share"], pr["core_share"]
+        if pr["active_days"] <= 3 or p["credits"] < gavg * 0.05:
+            p["pattern"] = "轻量偶发"
+        elif ns >= 25:
+            p["pattern"] = "夜间型"
+        elif es + ns >= 40 and cs < 60:
+            p["pattern"] = "早晚型"
+        elif cs >= 70:
+            p["pattern"] = "白天型"
+        elif med_active and pr["active_days"] <= med_active * 0.5 and pr["peak_share"] >= 25:
+            p["pattern"] = "集中攻坚"
+        elif sample.get("workday") and pr["active_days"] >= sample["workday"] * 0.85 and pr["peak_share"] < 20:
+            p["pattern"] = "持续稳定"
+        else:
+            p["pattern"] = "混合型"
+
+    # ---- 相似同事：组内模型结构余弦相似度 Top3 ----
+    by_owner = collections.defaultdict(list)
+    for p in people:
+        by_owner[p["owner"]].append(p)
+    for ps in by_owner.values():
+        used_ps = [p for p in ps if p["credits"] > 0]
+        vocab = sorted({m["name"] for p in used_ps for m in p["profile"]["models"]})
+        if len(used_ps) < 2 or not vocab:
+            for p in ps:
+                p["peers"] = []
+            continue
+        idx = {n: i for i, n in enumerate(vocab)}
+        vecs = {}
+        for p in used_ps:
+            v = [0.0] * len(vocab)
+            for m in p["profile"]["models"]:
+                v[idx[m["name"]]] = m["share"]
+            vecs[p["key"]] = v
+
+        def cos(a, b):
+            dot = sum(x * y for x, y in zip(a, b))
+            na = math.sqrt(sum(x * x for x in a))
+            nb = math.sqrt(sum(x * x for x in b))
+            return dot / (na * nb) if na and nb else 0.0
+
+        for p in used_ps:
+            sims = sorted(((cos(vecs[p["key"]], vecs[q["key"]]), q) for q in used_ps if q is not p),
+                          key=lambda x: -x[0])
+            p["peers"] = [{"key": q["key"], "name": q["name"], "sim": round(s * 100)} for s, q in sims[:3]]
+        for p in ps:
+            p.setdefault("peers", [])
+
+    # ---- 组级 / 部门级行为汇总 ----
+    behavior = _behavior_agg(accounts)
+    sw = sample.get("workday", 0)
+    tiers = {"高频": 0, "稳定": 0, "偶发": 0, "沉睡": 0}
+    for p in accounts:
+        if p["credits"] <= 0:
+            tiers["沉睡"] += 1
+        elif sw and p["profile"]["active_days"] >= sw * 0.8:
+            tiers["高频"] += 1
+        elif sw and p["profile"]["active_days"] >= sw * 0.5:
+            tiers["稳定"] += 1
+        else:
+            tiers["偶发"] += 1
+    clusters = collections.Counter()
+    cluster_c = collections.Counter()
+    for p in used:
+        clusters[p["profile"]["models"][0]["name"] if p["profile"]["models"] else "—"] += 1
+        cluster_c[p["profile"]["models"][0]["name"] if p["profile"]["models"] else "—"] += p["credits"]
+    busiest = max(range(24), key=lambda h: behavior["hour_c"][h])
+    core_hours = [h for h in range(9, 18) if behavior["hour_people"][h] > 0]
+    tz_bad, tz_n = tz or (0, 0)
+    behavior.update({
+        "tiers": tiers,
+        "clusters": [{"model": k, "count": v, "credits": cluster_c[k]} for k, v in clusters.most_common()],
+        "median_active_days": med_active,
+        "busiest_hour": busiest,
+        "quiet_core_hour": min(core_hours, key=lambda h: behavior["hour_people"][h]) if core_hours else None,
+        "tz": {"checked": tz_n, "mismatch": tz_bad, "ratio": (tz_bad / tz_n * 100) if tz_n else 0.0},
+    })
+    return behavior
+
+
 def build(cfg, csv_path: str, subscription: dict, cal, month: tuple[int, int], log=print) -> dict:
     year, mon = month
     warnings: list[str] = []
+    beh = dict(cfg.raw.get("behavior") or {})   # 行为画像口径（可选配置，不参与确认哈希）
 
     # ---------------- 读取明细 ----------------
     rows = list(csv.DictReader(open(csv_path, encoding="utf-8-sig")))
@@ -80,10 +364,17 @@ def build(cfg, csv_path: str, subscription: dict, cal, month: tuple[int, int], l
     # ---------------- 系数 ----------------
     rate_agg = collections.defaultdict(lambda: [0.0, 0.0, 0])   # credits, tokens, n
     call_agg = collections.defaultdict(lambda: [0.0, 0.0, 0])
+    tz_bad = tz_n = 0        # _peak/_offpeak 后缀与时间戳小时的一致性（时区哨兵）
     for r in rows:
         model, unit = r["模型名称"], r["用量单位"]
         if unit == "tokens":
             ctx, base, per = split_type(r["用量类型"])
+            t = r["用量类型"]
+            if t.endswith("_peak") or t.endswith("_offpeak"):
+                h = int(r["统计开始时间"][11:13])
+                tz_n += 1
+                if (8 <= h <= 21) != t.endswith("_peak"):
+                    tz_bad += 1
             a = rate_agg[(model, ctx, base, per)]
             a[0] += float(r["用量（Credits）"])
             a[1] += float(r["原始用量"])
@@ -110,6 +401,9 @@ def build(cfg, csv_path: str, subscription: dict, cal, month: tuple[int, int], l
 
     calls = [{"model": m, "period": p, "credits": c, "calls": t, "rows": n,
               "unit_price": c / t if t else 0} for (m, p), (c, t, n) in call_agg.items()]
+    if tz_n and tz_bad / tz_n > 0.02:
+        warnings.append(f"peak/offpeak 后缀与时间戳小时不一致 {tz_bad}/{tz_n}（{tz_bad / tz_n * 100:.1f}%），"
+                        f"导出时区或时段口径可能已变化，作息分析仅供参考")
 
     # ---------------- 日历 ----------------
     month_start, month_end = cal.month_range(year, mon)
@@ -159,13 +453,44 @@ def build(cfg, csv_path: str, subscription: dict, cal, month: tuple[int, int], l
     prm_p, prm_c = pri["premium_seat"]["price"], pri["premium_seat"]["credits"]
     pack_p, pack_c = pri["pack"]["price"], pri["pack"]["credits"]
 
-    P = {m.hrid or m.name_zh: dict(
-        credits=0.0, seat=0.0, pack=0.0, rows=0,
-        day=collections.Counter(), model=collections.Counter(),
-        inp=0.0, cr=0.0, cw=0.0, out=0.0, peak=0.0, offpeak=0.0) for m in cfg.members}
+    def _mstat():
+        return dict(credits=0.0, tokens=0.0, inp=0.0, out=0.0, cr=0.0, cw=0.0, rows=0, days=set())
+
+    # ---- 成员身份 key：全局解析一遍，防撞名 ----
+    # 回退链：中文名 > 钉联名（bailian_accounts 首项）> 邮箱前缀 > hrid > 英文名 > unknown
+    # hrid 仅作最后兜底，不参与日常身份/文件名逻辑（名册里 hrid 可能是错数据）
+    key_map: dict[int, str] = {}
+    used_keys: set[str] = set()
+    for m in cfg.members:
+        cand = (m.name_zh or (m.accounts[0] if m.accounts else "")
+                or (m.email.split("@", 1)[0] if m.email else "")
+                or m.hrid or m.name_en or "unknown")
+        k = cand
+        n = 2
+        while k in used_keys:
+            k = f"{cand}-{n}"
+            n += 1
+        if k != cand:
+            warnings.append(f"成员 key 撞名：{cand} → {k}（第 {n - 1} 个同名）")
+        used_keys.add(k)
+        key_map[id(m)] = k
 
     def key_of(m):
-        return m.hrid or m.name_zh
+        return key_map[id(m)]
+
+    P = {key_of(m): dict(
+        credits=0.0, seat=0.0, pack=0.0, rows=0,
+        day=collections.Counter(), model=collections.Counter(),
+        inp=0.0, cr=0.0, cw=0.0, out=0.0, peak=0.0, offpeak=0.0,
+        # ---- 行为画像采集（均为完整日口径，剔除不完整最后一天） ----
+        partial_credits=0.0,                       # 不完整日产生的点数（不计入作息分布）
+        hour_c=collections.Counter(),              # 小时 → Credits
+        hour_m=[set() for _ in range(24)],         # 小时 → {date hh:mm} 活跃分钟
+        dh=collections.Counter(),                  # (date, hour) → Credits（日历热力图）
+        daily_c=collections.Counter(),             # date → Credits（含不完整日）
+        daily_min=collections.defaultdict(set),    # date → {"HH:MM"}（完整日）
+        wdh=collections.Counter(),                 # (weekday, hour) → Credits
+        mstat=collections.defaultdict(_mstat)) for m in cfg.members}
 
     for r in rows:
         m = acc2m.get(r["成员ID"])
@@ -180,21 +505,43 @@ def build(cfg, csv_path: str, subscription: dict, cal, month: tuple[int, int], l
             d["seat"] += c
         else:
             d["pack"] += c
-        day = _d(r["统计开始时间"])
+        ts = r["统计开始时间"]
+        day = _d(ts)
+        day_s = ts[:10]
+        d["daily_c"][day_s] += c
         if day <= rate_end:
             k = cal.kind(day)
             if k in ("workday", "weekend"):
                 d["day"][k] += c
+            hh = int(ts[11:13])
+            d["hour_c"][hh] += c
+            d["hour_m"][hh].add(ts[:16])
+            d["dh"][(day_s, hh)] += c
+            d["daily_min"][day_s].add(ts[11:16])
+            d["wdh"][(day.weekday(), hh)] += c
+            ms = d["mstat"][r["模型名称"]]
+            ms["credits"] += c
+            ms["rows"] += 1
+            ms["days"].add(day_s)
+        else:
+            d["partial_credits"] += c
         if r["用量单位"] == "tokens":
             t, n = r["用量类型"], float(r["原始用量"])
             if "cache_creation" in t:
                 d["cw"] += n
+                tok_role = "cw"
             elif "cache" in t:
                 d["cr"] += n
+                tok_role = "cr"
             elif "output" in t:
                 d["out"] += n
+                tok_role = "out"
             else:
                 d["inp"] += n
+                tok_role = "inp"
+            if day <= rate_end:
+                d["mstat"][r["模型名称"]][tok_role] += n
+                d["mstat"][r["模型名称"]]["tokens"] += n
         if r["用量类型"].endswith("_peak"):
             d["peak"] += c
         elif r["用量类型"].endswith("_offpeak"):
@@ -238,7 +585,11 @@ def build(cfg, csv_path: str, subscription: dict, cal, month: tuple[int, int], l
                        "席位用尽" if d["credits"] >= quota * 0.995 else
                        "席位紧张" if d["credits"] >= quota * 0.8 else
                        "零用量" if d["credits"] == 0 else "正常"),
+            "profile": _profile(d, cal, month_start, month_end, rate_end, beh),
         })
+
+    # ---- 行为后处理：分位 / 模式标签 / 相似同事 / 部门级行为汇总 ----
+    behavior = _behavior_pass(cfg, people, sample, tz=(tz_bad, tz_n))
 
     # ---------------- 分组 ----------------
     groups = []
@@ -258,6 +609,9 @@ def build(cfg, csv_path: str, subscription: dict, cal, month: tuple[int, int], l
             "models": dict(collections.Counter(
                 {k: v for p in ps for k, v in p["models"].items()}).most_common()),
         })
+    byp = {p["key"]: p for p in people}
+    for g in groups:
+        g["behavior"] = _behavior_agg([byp[k] for k in g["people"]])
 
     # ---------------- 模型 ----------------
     M = collections.defaultdict(lambda: dict(credits=0.0, tokens=0.0, inp=0.0, out=0.0,
@@ -362,6 +716,7 @@ def build(cfg, csv_path: str, subscription: dict, cal, month: tuple[int, int], l
         "rates": rates, "calls": calls, "models": models,
         "people": people, "groups": groups, "unmapped": unmapped,
         "procurement": procurement,
+        "behavior": behavior,
         "waste": {"threshold": thr, "total": waste_total,
                   "count": len(unused_people),
                   "people": [p["key"] for p in unused_people]},

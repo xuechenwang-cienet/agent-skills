@@ -1,4 +1,4 @@
-"""s4 渲染：部门报告 + 各组报告 + 系数表 + 收件人清单。"""
+"""s4 渲染：部门报告 + 各组报告 + 个人报告 + 系数表 + 收件人清单。"""
 from __future__ import annotations
 
 import csv
@@ -7,11 +7,11 @@ import os
 
 from lib.render_dept import render as render_dept
 from lib.render_group import PALETTE, render as render_group
+from lib.render_member import render as render_member
 
 
 def _recipients(A, cfg, path):
-    """各组收件人清单：owner 附带部门报告，成员只带本组报告。"""
-    groups = {g["name"]: g for g in A["groups"]}
+    """各组收件人清单：owner 附带部门报告+组报告，成员附本人报告+组报告。"""
     rows = []
     for g in A["groups"]:
         owner = g["name"]
@@ -28,16 +28,18 @@ def _recipients(A, cfg, path):
                 "role": "owner" if p["name"] == owner else "member",
                 "report": f"team-{owner}.html",
                 "dept_report": "token_credits_report.html",
+                "member_report": f"member-{p['key']}.html",
                 "send_dept": "true" if p["name"] == owner else "false",
             })
         if not any(r["name"] == owner and r["group"] == owner for r in rows):
             # owner 自己不在组里（或没邮箱），补一行
             rows.append({"group": owner, "owner": owner, "name": owner, "email": "",
                          "role": "owner", "report": f"team-{owner}.html",
-                         "dept_report": "token_credits_report.html", "send_dept": "true"})
+                         "dept_report": "token_credits_report.html",
+                         "member_report": "", "send_dept": "true"})
     with open(path, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.DictWriter(f, fieldnames=["group", "owner", "name", "email", "role",
-                                          "report", "dept_report", "send_dept"])
+                                          "report", "dept_report", "member_report", "send_dept"])
         w.writeheader()
         w.writerows(rows)
     return len(rows)
@@ -97,16 +99,23 @@ def _coefficient_xlsx(A, cfg, path):
 
     ws2 = wb.create_sheet("逐人")
     ws2.append(["姓名", "共享人", "组", "部门", "邮箱", "席位", "额度", "本月点数", "席位消耗",
-                "加油包", "结余点数", "折合金额", "下月预测", "状态"])
+                "加油包", "结余点数", "折合金额", "下月预测", "状态",
+                "活跃天数", "日均活跃分钟", "夜间%", "周末%", "典型时段", "主力模型", "主力占比", "模式"])
     for p in sorted(A["people"], key=lambda x: -x["credits"]):
+        pr = p["profile"]
         ws2.append([p["name"], p["shared_with"], p["owner"], p["dept"], p["email"],
                     "高级" if p["premium"] else "标准", p["quota"], round(p["credits"], 2),
                     round(p["seat"], 2), round(p["pack"], 2), round(p["unused"], 2),
-                    round(p["waste"], 2), round(p["forecast"], 2), p["status"]])
+                    round(p["waste"], 2), round(p["forecast"], 2), p["status"],
+                    pr["active_days"], round(pr["avg_min_day"], 1),
+                    round(pr["night_share"], 1), round(pr["weekend_share"] or 0, 1),
+                    f'{pr["start_med"] or "—"}-{pr["end_med"] or "—"}',
+                    p["top_model"], round(pr["top1_share"], 1), p["pattern"]])
     for cell in ws2[1]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = hdr
-    for i, w in enumerate([14, 14, 10, 10, 30, 8, 10, 12, 12, 12, 12, 10, 12, 12], 1):
+    for i, w in enumerate([14, 14, 10, 10, 30, 8, 10, 12, 12, 12, 12, 10, 12, 12,
+                           10, 13, 9, 9, 15, 24, 10, 10], 1):
         ws2.column_dimensions[get_column_letter(i)].width = w
     ws2.freeze_panes = "A2"
 
@@ -144,6 +153,23 @@ def run(cfg, A, out_dir, log):
             files.append(p)
             log(f"  ✓ {os.path.basename(p):<24} {g['count']:>2} 席  {g['credits']:>10,.0f} 点"
                 f"  {g['credits'] / total * 100:>5.1f}%")
+
+    n_member = 0
+    if cfg.output.get("member_reports", True):
+        skipped = []
+        for i, g in enumerate(A["groups"]):
+            accent = PALETTE[i % len(PALETTE)]
+            by_key = {p["key"]: p for p in A["people"]}
+            for key in g["people"]:
+                p = by_key[key]
+                if not p["accounts"]:
+                    skipped.append(p["label"])
+                    continue
+                mp = os.path.join(out_dir, f"member-{key}.html")
+                open(mp, "w", encoding="utf-8").write(render_member(A, cfg, key, accent))
+                files.append(mp)
+                n_member += 1
+        log(f"  ✓ 个人报告 × {n_member}" + (f"（跳过未开通：{'、'.join(skipped)}）" if skipped else ""))
 
     rec = os.path.join(out_dir, "recipients.csv")
     n = _recipients(A, cfg, rec)

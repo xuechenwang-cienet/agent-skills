@@ -2,9 +2,10 @@
 name: tokenplan-enterprise-bailian
 description: >
   阿里云百炼 Token Plan 组织用量分析：从控制台导出全量用量明细，反推每个模型/时段/token 类型的
-  Credits 结算系数，按项目组汇总用量，预测下月消耗与席位结余，生成部门报告 + 各组独立 HTML 报告。
-  触发场景：用户提到"百炼用量"、"Token Plan"、"Credits 系数"、"token 兑换率"、"部门用量报告"、
-  "项目组用量"、"席位结余"、"下月采购建议"、"tokenplan 分析"、"bailian usage report"。
+  Credits 结算系数，按项目组汇总用量，预测下月消耗与席位结余，生成部门报告 + 各组报告 +
+  每人一份的行为画像报告（模型偏好占比、作息热力图、使用节奏）。触发场景：用户提到"百炼用量"、
+  "Token Plan"、"Credits 系数"、"token 兑换率"、"部门用量报告"、"项目组用量"、"席位结余"、
+  "下月采购建议"、"个人用量画像"、"员工使用统计"、"tokenplan 分析"、"bailian usage report"。
   也可作为定时任务（--non-interactive）每周生成当月报告。
 ---
 
@@ -20,6 +21,7 @@ description: >
 
 - 要一份**部门级**的用量与成本报告（模型横向对比、组维度汇总、下月采购测算）
 - 要**按项目组**拆分的报告（细化到人、含席位结余与采购建议）
+- 要**每个人**的使用画像（偏好哪个模型及占比、几点在用、活跃天数与时长、夜间/周末占比、给 ta 的建议）
 - 要推导 **token ↔ Credits 的结算系数**（精确到整数，可验证）
 - 需要**每周自动**生成当月报告（配合 `--non-interactive`）
 
@@ -71,7 +73,7 @@ python3 scripts/run.py --tag evening
 | s1 | `steps/s1_usage.py` | 打开用量页、捕获 `sec_token`、提交导出任务、轮询、下载 | `raw/usage_detail.csv` |
 | s2 | `steps/s2_subscription.py` | 调订阅接口取席位/加油包 | `raw/subscription.json` |
 | s3 | `steps/s3_analyze.py` | 系数、逐人、分组、模型、预测、结余、采购 | `data/analysis.json` |
-| s4 | `steps/s4_render.py` | 部门报告 + 各组报告 + 系数表 + 收件人清单 | `*.html` `*.xlsx` `recipients.csv` |
+| s4 | `steps/s4_render.py` | 部门报告 + 各组报告 + 个人画像报告 + 系数表 + 收件人清单 | `*.html` `*.xlsx` `recipients.csv` |
 | s5 | `steps/s5_manifest.py` | 10 项自检 + 清单 | `manifest.json` |
 
 每一步都可单独重跑，`--from s3` 跳过抓数。
@@ -80,7 +82,7 @@ python3 scripts/run.py --tag evening
 
 | 文件 | 内容 |
 |---|---|
-| `config.yaml` | Web root / Org ID、导出参数、**价格**、预测参数、输出策略、TTL（**不入库**，由 sample 复制） |
+| `config.yaml` | Web root / Org ID、导出参数、**价格**、预测参数、输出策略（含 `member_reports`）、行为口径 `behavior`（可选）、TTL（**不入库**，由 sample 复制） |
 | `members.csv` | 名册：姓名、邮箱、部门、P-code、**组长**、席位类型与额度、**共享人**、Bailian 账号（显示名 + acc_id）（**不入库**，由 sample 复制） |
 | `holidays.yaml` | 法定节假日 + 调休工作日 + `verified_months` |
 | `config.sample.yaml` / `members.sample.csv` | 模板，随仓库发布 |
@@ -129,15 +131,39 @@ output/2026-10-20/
 ├── raw/usage_detail.csv           全量明细（几分钟到十几 MB）
 ├── raw/subscription.json          订阅/席位/加油包快照
 ├── data/analysis.json             结构化分析结果（可单独消费）
-├── token_credits_report.html      部门报告
-├── team-<组长>.html               每个项目组一份
+├── token_credits_report.html      部门报告（13 节，含「人员行为总览」与个人报告索引）
+├── team-<组长>.html               每个项目组一份（含「成员作息与选型对比」）
+├── member-<姓名>.html             每人一份行为画像报告（模型偏好/作息/节奏/对比/建议）
 ├── token_credits_coefficients.xlsx / .md
-├── recipients.csv                 收件人清单（group/owner/name/email/role/report）
+├── recipients.csv                 收件人清单（含 member_report 列）
 ├── manifest.json                  清单 + 自检结果
 └── logs/2026-10-20.log
 ```
 
-`recipients.csv` 里 owner 行 `send_dept=true`（附部门报告），member 行只附本组报告——可直接做邮件合并。
+成员身份 key 的回退链：**中文名 > 钉联名（bailian_accounts 首项）> 邮箱前缀 > hrid > 英文名**；
+撞名自动加 `-2` 后缀并在 manifest 打 warning。`hrid` 仅作最后兜底，不参与文件名逻辑
+（名册里 hrid 可能是错数据，无需修正即可正常出报告）。
+
+`recipients.csv` 里 owner 行 `send_dept=true`（附部门报告）；每行都带 `member_report`（本人画像报告）——可直接做邮件合并。
+个人报告默认开启（`output.member_reports: true`），未开通账号的席位自动跳过。
+
+## 行为画像口径
+
+个人报告与「人员行为总览」全部由**分钟级计费桶**推断：某分钟有调用发生即计为「活跃」，
+**不等同于考勤**；所有占比基于完整日（数据不完整的最后一天自动剔除，避免早晚占比被半天数据拉偏）。
+
+| 指标 | 定义 |
+|---|---|
+| 活跃分钟 | 有调用的去重分钟数（同一分钟多个模型/类型只算 1） |
+| 会话 | 相邻活跃分钟间隔 ≤ `behavior.session_gap_min`（默认 15）算同一段 |
+| 典型作息 | 全月每日首次/末次活跃时刻的**中位数**；跨度 = 末次 − 首次 + 1 分钟 |
+| 夜间 / 晚间 / 核心 | 点数落在 22:00–07:59 / 18:00–21:59 / 09:00–17:59 的占比（时段可在 `behavior` 段改） |
+| 模式标签 | 单标签规则，按序命中：轻量偶发（活跃 ≤3 天或 < 组均 5%）→ 夜间型（夜间 ≥25%）→ 早晚型 → 白天型（核心 ≥70%）→ 集中攻坚（活跃天数 ≤ 部门中位一半且单日集中度 ≥25%）→ 持续稳定（活跃 ≥85% 工作日样本且峰值 <20%）→ 混合型 |
+| 分位 | 与部门内有用量的人比较的百分位（P50=中位），刻意不做排行榜 |
+| 相似同事 | 组内模型结构向量的余弦相似度 Top3 |
+| 混合单价 | 点数 ÷ tokens × 1e6，衡量选型贵贱（与模型选择强相关，与效率弱相关） |
+
+`behavior:` 配置段可选（`night` / `core` / `session_gap_min`），**不参与确认哈希**，改动不触发重新确认。
 
 ## 退出码
 
@@ -179,6 +205,9 @@ output/2026-10-20/
 7. 目标月份 / 下月日历已核对（**警告级**）
 8. 所有报告文件已生成
 9. 组报告数量 = 项目组数
+10. 个人报告数量 = 有账号席位数（**警告级**，`member_reports` 关闭时跳过）
+11. 行为分布（24h / 逐日）合计 = 部门总点数（**警告级**）
+12. `peak`/`offpeak` 后缀与时间戳小时一致率 ≥98%（**警告级**，异常说明导出时区或时段口径变了，作息图不可信）
 
 ## 故障排查
 
@@ -198,3 +227,6 @@ output/2026-10-20/
 - 上下文分档只报告本月实际出现过的档位
 - 采购测算是**单月口径**，未考虑跨月加油包结转到更远的月份
 - 报告里的「折算 ¥」是用于横向比较的成本口径，**不等于财务账单分摊**
+- 作息与活跃时长是**计费桶推断**：反映「何时有调用」，受批处理任务影响大，不能当考勤或绩效依据
+- 明细导出若换成非 MINUTE 粒度（HOUR/DAY），活跃分钟与会话指标会失真，需同步调大 `session_gap_min`
+- `--from s4` 读到旧版本 analysis.json（无画像字段）时会自动用同目录明细重跑 s3

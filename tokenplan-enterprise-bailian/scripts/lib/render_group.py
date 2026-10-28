@@ -4,10 +4,18 @@ from __future__ import annotations
 import collections
 import html
 
+from .render_util import esc, f, fnum, heat_grid
 from .ui import CSS, JS
 
 PER = {"peak": ("PEAK", "高峰"), "offpeak": ("OFFPEAK", "平峰"), "flat": ("FLAT", "不分时段")}
 PALETTE = ["#ff7a45", "#5fc9a5", "#7aa7d8", "#e8b44a", "#c792ea", "#9aa5b1", "#8b9dc3", "#d98b8b"]
+WD = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+KIND_MARK = {"workday": "", "weekend": "周末", "holiday": "休", "makeup": "调休"}
+
+
+def _pattern_chip_html(pattern: str) -> str:
+    from .render_util import PATTERN_CHIP
+    return f'<span class="chip {PATTERN_CHIP.get(pattern, "flat")}">{esc(pattern)}</span>'
 
 
 def esc(s):
@@ -37,6 +45,9 @@ def render(A, cfg, group_name: str, accent: str) -> str:
     meta, cal, sub, proc = A["meta"], A["calendar"], A["subscription"], A["procurement"]
     by_key = {p["key"]: p for p in A["people"]}
     g = next(x for x in A["groups"] if x["name"] == group_name)
+    gb = g.get("behavior") or {"hour_c": [0.0] * 24, "hour_people": [0] * 24, "night_share": 0.0,
+                               "evening_share": 0.0, "core_share": 0.0, "weekend_share": 0.0,
+                               "active_minutes": 0, "active_days_med": 0, "patterns": {}}
     ps = [by_key[k] for k in g["people"]]
     total = meta["total_credits"]
     denom = total or 1
@@ -57,8 +68,9 @@ def render(A, cfg, group_name: str, accent: str) -> str:
         waste_td = (f'<td class="num" style="color:var(--ember)">¥{p["waste"]:,.0f}</td>'
                     if has_unused else '<td class="num dim">—</td>')
         shared = f'<span class="shared">共享 · {esc(p["shared_with"])}</span>' if p["shared_with"] else ""
+        pattern = _pattern_chip_html(p.get("pattern", "—"))
         mrows.append(f'''<tr{' class="hl"' if has_unused else ''}>
-          <td class="m">{esc(p["name"])}{shared}</td>
+          <td class="m"><a href="member-{esc(p["key"])}.html">{esc(p["name"])}</a>{shared}</td>
           <td class="l dim" style="font-size:12px;line-height:1.45">{esc(p["dept"])}<br>
             <span style="font-family:var(--mono);font-size:10.5px;color:var(--dim2)">{esc(p["pcode"])}</span></td>
           <td class="num dim">{"高级<br>100,000" if p["premium"] else "标准<br>25,000"}</td>
@@ -71,7 +83,8 @@ def render(A, cfg, group_name: str, accent: str) -> str:
           <td class="num">{off}</td>
           <td class="num">{f(p["forecast"])}</td>
           {waste_td}
-          <td><span class="chip {'none' if p['status'] in ('未开通',) else ('warn' if p['status'] in ('席位结余', '席位紧张') else ('full' if p['status'] == '席位用尽' else 'ok'))}">{esc(p["status"])}</span></td></tr>''')
+          <td><span class="chip {'none' if p['status'] in ('未开通',) else ('warn' if p['status'] in ('席位结余', '席位紧张') else ('full' if p['status'] == '席位用尽' else 'ok'))}">{esc(p["status"])}</span></td>
+          <td class="num dim">{pattern}</td></tr>''')
 
     cmax = max((p["credits"] for p in ps), default=1) or 1
     rank = []
@@ -93,10 +106,10 @@ def render(A, cfg, group_name: str, accent: str) -> str:
     gmodel_rows = []
     for mname, v in gmodels.most_common():
         cand = [(k, c) for k, c in gtier.items() if k[0] == mname]
-        best = max(cand, key=lambda x: x[1])[0]      # (model, ctx, period)
-        ctx, per = best[1], best[2]
+        best = max(cand, key=lambda x: x[1])[0] if cand else None   # (model, ctx, period)
+        ctx, per = (best[1], best[2]) if best else ("", "flat")
         keys = {r["role"]: r["rate"] for r in rates
-                if r["model"] == mname and r["ctx"] == ctx and r["period"] == per}
+                if r["model"] == mname and best and r["ctx"] == best[1] and r["period"] == best[2]}
         users = sum(1 for p in ps if p["models"].get(mname, 0) > 0)
         tier = f' <span class="ctx">{esc(ctx)}</span>' if ctx else ""
         gmodel_rows.append(f'''<tr><td class="m">{esc(mname)}{tier}</td>
@@ -186,6 +199,66 @@ def render(A, cfg, group_name: str, accent: str) -> str:
                        f"但 output 单价是 cache read 的 <b>20–36 倍</b>。限制 max_tokens、减少冗长解释更有效。"))
     adv_html = "".join(f'<div>{k}</div><div>{v}</div>' for k, v in advice)
 
+    # ---------- 成员作息与选型对比 ----------
+    hours_labels = [str(h) if h % 3 == 0 else "" for h in range(24)]
+    ps_sorted = sorted(ps, key=lambda x: -x["credits"])
+    has_active = [x for x in ps_sorted if x["profile"]["active_minutes"] > 0]
+    busiest = max(range(24), key=lambda h: gb["hour_c"][h])
+    _pat_cls = {"白天型": "ok", "持续稳定": "ok", "混合型": "flat",
+                "早晚型": "warn", "夜间型": "warn", "集中攻坚": "full"}
+    pat_chips = " ".join(
+        f'<span class="chip {_pat_cls.get(k, "none")}">{esc(k)} × {v}</span>'
+        for k, v in sorted(gb["patterns"].items(), key=lambda kv: -kv[1]))
+    gh_kv = f'''
+  <div class="kv rv" style="margin-top:18px">
+    <div>本组整体</div><div>夜间(22–08) <b>{gb["night_share"]:.1f}%</b> · 晚间(18–22) {gb["evening_share"]:.1f}% ·
+      核心(09–18) {gb["core_share"]:.1f}% · 周末 {gb["weekend_share"]:.1f}%（点数加权）</div>
+    <div>最活跃时段</div><div><b>{busiest}:00 – {busiest + 1}:00</b>（{f(gb["hour_c"][busiest])} 点）·
+      本月有调用 {len(has_active)} / {g["count"]} 人，累计活跃 {gb["active_minutes"]:,} 分钟</div>
+    <div>模式分布</div><div>{pat_chips or "—"}</div>
+  </div>'''
+    if has_active:
+        vmax_g = max(max(x["profile"]["hours_c"]) for x in has_active)
+        person_hours = heat_grid(
+            [x["name"] for x in has_active], hours_labels,
+            [x["profile"]["hours_c"] for x in has_active], vmax=vmax_g,
+            row_w=72, cell=18, fill=True,
+            title=lambda i, j, v, _ps=has_active: f'{_ps[i]["name"]} {j:02d}:00 · {f(v)} 点')
+        gm_names = [m for m, _ in gmodels.most_common(6)]
+        gm_rows = []
+        for x in has_active:
+            smap = {mm["name"]: mm["share"] for mm in x["profile"]["models"]}
+            gm_rows.append([smap.get(n, 0.0) for n in gm_names])
+        person_models = f'''
+  <p class="heat-cap rv" style="margin-top:24px">成员 × 模型占比（前 {len(gm_names)} 个模型，行内归一）</p>
+  <div class="heat-wrap rv">{heat_grid([x["name"] for x in has_active],
+            [n.replace("deepseek-v4.1", "ds-v4.1") for n in gm_names], gm_rows,
+            rgb=(199, 146, 234), row_w=72, cell=18, fill=True,
+            title=lambda i, j, v: f'{has_active[i]["name"]} · {gm_names[j]} · {v:.1f}%')}</div>
+  <div class="lg rv"><span>颜色越亮 = 该成员在这个模型上的点数占比越高（每人内部归一，横向看选型集中度）</span></div>'''
+        beh_rows = []
+        for x in has_active:
+            xpr = x["profile"]
+            beh_rows.append(f'''<tr>
+              <td class="m"><a href="member-{esc(x["key"])}.html">{esc(x["name"])}</a></td>
+              <td class="num dim">{_pattern_chip_html(x["pattern"])}</td>
+              <td class="num">{xpr["active_days"]}</td>
+              <td class="num">{xpr["avg_min_day"]:.0f}</td>
+              <td class="num dim">{esc(xpr["start_med"] or "—")}–{esc(xpr["end_med"] or "—")}</td>
+              <td class="num">{'<span style="color:var(--ember)">' if xpr["night_share"] >= 25 else ''}{xpr["night_share"]:.1f}%{'</span>' if xpr["night_share"] >= 25 else ''}</td>
+              <td class="num">{(xpr["weekend_share"] or 0):.1f}%</td>
+              <td class="num dim">{fnum(xpr["mix_price"])}</td>
+              <td class="num dim">{xpr["top1_share"]:.1f}%</td></tr>''')
+        beh_tbl = f'''
+  <div class="tbl-wrap rv" style="max-height:none;margin-top:24px"><table>
+    <thead><tr><th>成员</th><th>模式</th><th>活跃天数</th><th>日均活跃分钟</th><th>典型时段</th>
+      <th>夜间 22–08</th><th>周末</th><th>混合单价 / 1M</th><th>主力占比</th></tr></thead>
+    <tbody>{''.join(beh_rows)}</tbody></table></div>'''
+    else:
+        person_hours = '<p class="sec-note">本组本月无调用数据。</p>'
+        person_models = ""
+        beh_tbl = ""
+
     st_a = cal["next_month"]
 
     return f"""<!DOCTYPE html>
@@ -214,7 +287,7 @@ body{{--accent:{accent}}}
 
 <nav class="toc"><div class="wrap">
   <a href="#members" class="on">成员明细</a><a href="#rank">用量排行</a><a href="#models">模型结构</a>
-  <a href="#tokens">Token 结构</a><a href="#buy">采购建议</a><a href="#tech">技术建议</a>
+  <a href="#tokens">Token 结构</a><a href="#behavior">作息对比</a><a href="#buy">采购建议</a><a href="#tech">技术建议</a>
 </div></nav>
 
 <main>
@@ -226,7 +299,7 @@ body{{--accent:{accent}}}
   <div class="tbl-wrap" data-filterable style="max-height:none"><table>
     <thead><tr><th>姓名 / 共享人</th><th>部门 / P-code</th><th>席位</th><th>已用</th>
       <th>本月点数</th><th>占组比</th><th>折算 ¥</th><th>主力模型</th><th>缓存读</th><th>平峰</th>
-      <th>{nx} 预测</th><th>月末结余</th><th>状态</th></tr></thead>
+      <th>{nx} 预测</th><th>月末结余</th><th>状态</th><th>模式</th></tr></thead>
     <tbody>{''.join(mrows)}</tbody></table></div>
   <p class="sec-note" style="margin-top:12px">「平峰」只对带 peak/offpeak 区分的模型有意义（目前仅 deepseek-v4.1-flash），其余显示 —。</p>
 </div></section>
@@ -279,8 +352,18 @@ body{{--accent:{accent}}}
   </div>
 </div></section>
 
+<section id="behavior"><div class="wrap">
+  <div class="sec-head"><span class="sec-num">05</span><h2>成员作息与选型对比</h2></div>
+  <p class="sec-note">由<b>分钟级计费桶</b>推断：分钟内有调用即计活跃，<b>不等同于考勤</b>；占比基于完整日（剔除不完整最后一天）。
+  上图为每个成员的点数在 24 小时上的分布，可直接看出晚间与深夜型成员；点击姓名进入个人画像报告。</p>
+  {person_hours}
+  {person_models}
+  {beh_tbl}
+  {gh_kv}
+</div></section>
+
 <section id="buy"><div class="wrap">
-  <div class="sec-head"><span class="sec-num">05</span><h2>{nx} 采购建议</h2></div>
+  <div class="sec-head"><span class="sec-num">06</span><h2>{nx} 采购建议</h2></div>
   <p class="sec-note">{nx} 共 <b>{st_a["workday"]} 个工作日 + {st_a["weekend"]} 个周末</b>{("，" + str(st_a["holiday"]) + " 天法定假日") if st_a.get("holiday") else "，无法定节假日"}。
   本月因假日 {cal["this_month"].get("holiday", 0)} 天，所以<b>不能用本月均值外推</b>，本预测用假期后按工作日/周末分开的日均建模。</p>
   <div class="grid3 rv" style="margin-bottom:20px">
@@ -315,7 +398,7 @@ body{{--accent:{accent}}}
 </div></section>
 
 <section id="tech" style="border-bottom:0"><div class="wrap">
-  <div class="sec-head"><span class="sec-num">06</span><h2>组内技术建议</h2></div>
+  <div class="sec-head"><span class="sec-num">07</span><h2>组内技术建议</h2></div>
   <p class="sec-note">按本组实际数据生成，收益均以点数计。</p>
   <div class="kv rv">{adv_html}</div>
   <p class="sec-note" style="margin-top:20px">
