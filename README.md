@@ -9,6 +9,7 @@
 | [`long-task-session`](./long-task-session/) | 把预计超过 40 分钟的长任务从想法推进到可验收结果：六阶段流程 + 四份会话文档 + 长任务三件套 | "长任务""跑一晚上""session plan""验收红线" |
 | [`tokenplan-enterprise-bailian`](./tokenplan-enterprise-bailian/) | 阿里云百炼 Token Plan 组织用量分析：导出全量明细、反推 Credits 结算系数、按项目组汇总、预测下月采购与席位结余，生成部门 + 各组 HTML 报告 | "百炼用量""Token Plan""Credits 系数""token 兑换率""项目组用量" |
 | [`doc-review`](./doc-review/) | 通用文档评审与受控修订：双 agent 对抗评审、声明核验、引用/链接检查、人工决策记录、按已接受清单 1:1 修复、diff 回归审计 | "评审/审计/修订文档""核对修改摘要""审核意见" |
+| [`cienet-ppt-style`](./cienet-ppt-style/) | CIeNET 公司 PPT 母版与配色：8 个母版布局、品牌色卡、洋红面积上限、跨页语义配色一致性，配 officecli 建稿命令与自动校验脚本 | "CIeNET PPT""公司模板/母版""给 CIeNET 写汇报/方案/培训" |
 
 ## 安装
 
@@ -17,6 +18,8 @@
 npx -y skills@latest add xuechenwang-cienet/agent-skills -g -s long-task-session \
     -a claude-code opencode -y
 npx -y skills@latest add xuechenwang-cienet/agent-skills -g -s doc-review \
+    -a claude-code opencode -y
+npx -y skills@latest add xuechenwang-cienet/agent-skills -g -s cienet-ppt-style \
     -a claude-code opencode -y
 
 # 换 -s 即可装其它技能，例如：
@@ -84,6 +87,24 @@ bash doc-review/tests/selftest.sh
 
 ```
 ==== 结果：PASS=11 FAIL=0 ====
+```
+
+### cienet-ppt-style
+
+```bash
+bash cienet-ppt-style/tests/selftest.sh
+```
+
+依赖 `officecli`（真实建稿）与 `python3`（仅标准库）。覆盖 24 项：空稿 0 页/16:9/元数据、
+拒绝覆盖与 `--force`、4 页合规样张 PASS、大面积洋红 FAIL、洋红作渐变起点 FAIL、
+洋红在末端的渐变 PASS、洋红作图表第 1 序列 FAIL、同名序列跨页异色 FAIL、
+非 Calibri 字体 FAIL、色卡外颜色 FAIL、遮挡 logo FAIL、母版被改动 FAIL、
+`--plan` 一致/不一致、`preview.sh` 出图、脚本语法与文件完整性。
+
+最近一次结果（2026-11-10，macOS，Python 3.14，officecli 1.0.160）：
+
+```
+==== 结果：PASS=24 FAIL=0 ====
 ```
 
 ## 发布彩排记录
