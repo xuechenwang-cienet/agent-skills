@@ -3,10 +3,12 @@ name: tokenplan-enterprise-bailian
 description: >
   阿里云百炼 Token Plan 组织用量分析：从控制台导出全量用量明细，反推每个模型/时段/token 类型的
   Credits 结算系数，按项目组汇总用量，预测下月消耗与席位结余。报告按角色分层：基础版（系数口径，
-  所有人）、管理版（组/人/成本，限老板）、组报告（限组长）、个人画像（人手一份）。触发场景：用户提到
-  "百炼用量"、"Token Plan"、"Credits 系数"、"token 兑换率"、"部门用量报告"、"项目组用量"、
+  所有人）、管理版（组/人/成本，限老板）、组报告（限组长）、个人画像（人手一份）。数据来源分两类
+  控制台——企业版组织门户与个人控制台，运行前必须先问客户收集哪个（当前仅实现企业版）。触发场景：
+  用户提到"百炼用量"、"Token Plan"、"Credits 系数"、"token 兑换率"、"部门用量报告"、"项目组用量"、
   "席位结余"、"下月采购建议"、"个人用量画像"、"员工使用统计"、"报告权限分层"、"tokenplan 分析"、
-  "bailian usage report"。也可作为定时任务（--non-interactive）每周生成当月报告。
+  "bailian usage report"、"企业版控制台"、"个人版控制台"。也可作为定时任务（--non-interactive）
+  每周生成当月报告。
 ---
 
 # Token Plan 用量分析
@@ -16,6 +18,23 @@ description: >
 ```
 抓数 → 分析 → 渲染   （一条命令，约 30 秒）
 ```
+
+## 数据来源：先问客户收集哪个控制台
+
+百炼的管理页面有两类，数据不互通，**采集流程也完全不同**。运行前必须先问清楚：
+
+| 类型 | 入口 URL | 状态 |
+|---|---|---|
+| 企业版组织门户 | `https://tokenplan-enterprise.bailian.aliyunportal.com` | ✅ 已实现（本 skill 全部能力） |
+| 个人控制台 | `https://bailian.console.aliyun.com` | ⛔ 尚未支持 |
+
+- **企业版**：管理员为组织成员购买席位，可导出整个组织的用量明细、席位与加油包——本 skill 的全部报告（组/人/行为画像）都基于它
+- **个人版**：账号各自登录个人控制台，用量口径是单账号的，采集接口与组织版不同；在确认个人版的采集模型（单账号还是多成员各自账号的聚合）之前不做实现
+
+**落地方式（三层保障）**：
+1. **对话里先问**：agent 在运行前先问客户「收集企业版还是个人版控制台」，答案写入 `config/config.yaml` 的 `web.console_type`
+2. **s0 预检兜底**：`console_type: personal` 时直接打印不支持提示并停止（退出码 2），不做任何后续检查
+3. **确认机制**：「数据来源控制台」是五项确认之一，首次交互运行会给出两个 URL 让选择 `[1/2]`，确认后记录到 `state.json`；`--non-interactive` 模式只认已确认的配置
 
 ## 何时使用
 
@@ -30,7 +49,7 @@ description: >
 | 依赖 | 版本 / 安装 | 用途 | 缺失时 |
 |---|---|---|---|
 | **bsk**（browser-skill CLI） | 已安装且在 PATH | 驱动浏览器取数 | s0 直接失败（退出码 3） |
-| **Chrome + browser-skill 扩展** | 已连接、**已登录百炼控制台** | 提供登录态 | s0 直接失败 |
+| **Chrome + browser-skill 扩展** | 已连接、**已登录企业版组织门户** | 提供登录态 | s0 直接失败 |
 | **Python** | ≥ 3.11 | 全流程 | s0 失败 |
 | **PyYAML** | `uv pip install pyyaml` | 读 config | s0 失败 |
 | **openpyxl** | 可选，`uv pip install openpyxl` | 生成系数 xlsx、导入名册 | 仅跳过 xlsx，流程继续 |
@@ -47,7 +66,7 @@ cd tokenplan-enterprise-bailian
 cp config/config.sample.yaml config/config.yaml
 cp config/members.sample.csv config/members.csv
 
-# 1) 首次：交互确认四项配置后跑当月
+# 1) 首次：交互确认五项配置后跑当月
 python3 scripts/run.py
 
 # 2) 之后：配置在有效期内，可直接后台运行
@@ -69,7 +88,7 @@ python3 scripts/run.py --tag evening
 
 | 步骤 | 脚本 | 做什么 | 产物 |
 |---|---|---|---|
-| s0 | `steps/s0_preflight.py` | 依赖检查、四项确认校验、名册/日历一致性 | 控制台摘要 |
+| s0 | `steps/s0_preflight.py` | 依赖检查、数据来源判定、五项确认校验、名册/日历一致性 | 控制台摘要 |
 | s1 | `steps/s1_usage.py` | 打开用量页、捕获 `sec_token`、提交导出任务、轮询、下载 | `raw/usage_detail.csv` |
 | s2 | `steps/s2_subscription.py` | 调订阅接口取席位/加油包 | `raw/subscription.json` |
 | s3 | `steps/s3_analyze.py` | 系数、逐人、分组、模型、预测、结余、采购 | `data/analysis.json` |
@@ -82,23 +101,24 @@ python3 scripts/run.py --tag evening
 
 | 文件 | 内容 |
 |---|---|
-| `config.yaml` | Web root / Org ID、导出参数、**价格**、预测参数、输出策略（含 `member_reports`）、行为口径 `behavior`（可选）、TTL（**不入库**，由 sample 复制） |
+| `config.yaml` | **数据来源控制台（`console_type`）**、Web root / Org ID、导出参数、**价格**、预测参数、输出策略（含 `member_reports`）、行为口径 `behavior`（可选）、TTL（**不入库**，由 sample 复制） |
 | `members.csv` | 名册：姓名、邮箱、部门、P-code、**组长**、席位类型与额度、**共享人**、Bailian 账号（显示名 + acc_id）（**不入库**，由 sample 复制） |
 | `holidays.yaml` | 法定节假日 + 调休工作日 + `verified_months` |
 | `config.sample.yaml` / `members.sample.csv` | 模板，随仓库发布 |
-| `state.json` | 四项确认的时间戳与内容哈希（自动生成，不入库） |
+| `state.json` | 五项确认的时间戳与内容哈希（自动生成，不入库） |
 
-### 四项确认与后台模式
+### 五项确认与后台模式
 
 | 项 | 失效期 | 失效条件 |
 |---|---|---|
+| 数据来源控制台 | 365 天 | 改了 `web.console_type` |
 | Web root / Org ID | 365 天 | 改 URL 或 org_id |
 | 人员名册 | 30 天 | 改了 `members.csv` |
 | 价格表 | 90 天 | 改了 `pricing` 段 |
 | 节假日 / 工作日 | 365 天 | 改了 `holidays.yaml` |
 
-- **交互模式**：缺项时逐项打印摘要并询问 `[Y/n]`，确认后写入 `state.json`
-- **后台模式 `--non-interactive`**：四项都有效才继续，否则**退出码 2** 并打印缺什么
+- **交互模式**：缺项时逐项打印摘要并询问；「数据来源控制台」单独给两个 URL 选 `[1/2]`（选个人版会提示尚未支持并停止）
+- **后台模式 `--non-interactive`**：五项都有效才继续，否则**退出码 2** 并打印缺什么
 - 文件内容哈希一变，对应确认立即失效（与天数无关）
 
 ### 名册里的特殊字段
@@ -188,7 +208,7 @@ output/2026-10-20/
 | 码 | 含义 | 排查 |
 |---|---|---|
 | 0 | 成功 | — |
-| 2 | 配置需确认（缺失/过期/哈希变化） | 跑一次交互模式确认，或更新配置 |
+| 2 | 配置需确认（缺失/过期/哈希变化），或数据来源选了尚未支持的个人控制台 | 跑一次交互模式确认，或把 `web.console_type` 改回 `enterprise` |
 | 3 | 浏览器或登录态异常 | `bsk status`；确认扩展绿色、已登录控制台 |
 | 4 | 数据异常（行数不符/系数非整数/分组对不上） | 看 `manifest.json` 的 `checks` |
 | 5 | 渲染失败 | 看 `logs/*.log` |

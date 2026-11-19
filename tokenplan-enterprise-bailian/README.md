@@ -1,10 +1,11 @@
 # tokenplan-enterprise-bailian
 
 阿里云百炼 **Token Plan** 组织用量分析：一条命令生成部门报告 + 各组报告 + 每人一份的行为画像报告。
+数据来源分**企业版组织门户**与**个人控制台**两类，运行前先确认收集哪个（当前仅实现企业版）。
 
 ```bash
 cd tokenplan-enterprise-bailian
-python3 scripts/run.py          # 首次需要确认四项配置
+python3 scripts/run.py          # 首次需要确认五项配置
 ```
 
 约 30 秒后，`output/<今天>/` 下会有部门报告、各组报告、36+ 份个人画像报告、系数表和收件人清单。
@@ -28,7 +29,7 @@ uv pip install pyyaml openpyxl # openpyxl 可选（只影响 xlsx 和名册导�
 bsk status                     # 需要显示浏览器已连接
 ```
 
-浏览器里打开过一次百炼控制台并保持登录即可，脚本不保存任何凭据。
+浏览器里打开过一次企业版组织门户（`https://tokenplan-enterprise.bailian.aliyunportal.com`）并保持登录即可，脚本不保存任何凭据。
 
 ### 2. 配置
 
@@ -59,7 +60,7 @@ python3 scripts/tools/import_roster.py --xlsx "../202610_usage.xlsx" --accounts 
 python3 scripts/run.py
 ```
 
-第一次会打印四项确认摘要，按回车确认即可。之后 30 天内（名册没改）不再询问。
+第一次会打印五项确认摘要——「数据来源控制台」会给企业版 / 个人版两个 URL 选 `[1/2]`（个人版尚未支持，选它会停止），其余按回车确认即可。之后有效期内不再询问。
 
 ---
 
@@ -86,7 +87,7 @@ python3 scripts/run.py --tag evening   # → output/2026-10-20-evening/
 10 9 * * 1 cd /path/to/tokenplan-enterprise-bailian && /usr/bin/env python3 scripts/run.py --non-interactive >> logs/cron.log 2>&1
 ```
 
-> 后台模式要求四项确认都在有效期内，否则退出码 2。定时任务第一次先手动跑一次确认。
+> 后台模式要求五项确认都在有效期内，否则退出码 2。定时任务第一次先手动跑一次确认。
 
 ---
 

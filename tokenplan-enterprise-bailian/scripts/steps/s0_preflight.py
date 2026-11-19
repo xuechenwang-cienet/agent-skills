@@ -1,4 +1,4 @@
-"""s0 预检：环境、依赖、配置、四项确认、名册与日历的一致性。"""
+"""s0 预检：环境、依赖、配置、五项确认、名册与日历的一致性。"""
 from __future__ import annotations
 
 import os
@@ -6,13 +6,16 @@ import shutil
 import sys
 
 from lib import bsk
+from lib.config import KEY_LABEL
 
-KEY_LABEL = {
-    "web_root": "Web root / Org ID",
-    "roster": "人员名册",
-    "pricing": "价格表",
-    "calendar": "节假日 / 工作日",
-}
+# 个人控制台（尚未支持）的停止提示
+PERSONAL_UNSUPPORTED = [
+    "  ✗ 个人控制台（personal）的采集流程尚未实现，本 skill 目前只支持企业版组织门户：",
+    "      企业版  https://tokenplan-enterprise.bailian.aliyunportal.com   ← 已实现",
+    "      个人版  https://bailian.console.aliyun.com                      ← 尚未支持",
+    "    请把 config/config.yaml 的 web.console_type 改回 enterprise 后重跑；",
+    "    如确需采集个人控制台，请先确认其采集模型（单账号 / 多账号聚合）再扩展本 skill。",
+]
 
 
 def _roster_summary(cfg):
@@ -37,6 +40,20 @@ def run(cfg, args, log):
     issues, fatal = [], []
     log("─" * 68)
     log("s0 预检")
+
+    # ---- 数据来源（最先判定：个人版未实现，直接停，不做后续检查） ----
+    ctype = cfg.console_type
+    if ctype == "personal":
+        log("  · 数据来源：personal（个人控制台）")
+        for line in PERSONAL_UNSUPPORTED:
+            log(line)
+        return {"ok": False, "exit": 2, "fatal": ["数据来源为个人控制台，尚未支持"], "issues": []}
+    if ctype != "enterprise":
+        fatal.append(f"web.console_type 只能是 enterprise / personal，当前是 {ctype!r}")
+        for f_ in fatal:
+            log(f"  ✗ {f_}")
+        return {"ok": False, "fatal": fatal, "issues": []}
+    log("  · 数据来源：enterprise（企业版组织门户）")
 
     # ---- 依赖 ----
     log("  · 检查依赖")
@@ -90,7 +107,7 @@ def run(cfg, args, log):
         f"高级 ¥{p['premium_seat']['price']}/{p['premium_seat']['credits']:,} · "
         f"加油包 ¥{p['pack']['price']}/{p['pack']['credits']:,}")
 
-    # ---- 四项确认 ----
+    # ---- 五项确认 ----
     log("  · 确认项")
     status = cfg.confirmation_status()
     bad = []
@@ -110,19 +127,42 @@ def run(cfg, args, log):
             for b in bad:
                 log(f"  ✗ 后台模式下确认项无效：{KEY_LABEL[b['key']]} — {b['reason']}")
             return {"ok": False, "exit": 2, "fatal": [b["reason"] for b in bad], "issues": issues}
-        log("")
-        for b in bad:
-            log(f"  需要确认：{KEY_LABEL[b['key']]}")
-        try:
-            ans = input("  确认以上信息无误？[Y/n] ").strip().lower()
-        except EOFError:
-            ans = "y"
-        if ans in ("", "y", "yes"):
+
+        # 数据来源单独问：企业版 / 个人版二选一（personal 已在前面拦截，走到这里只可能是 enterprise）
+        console_bad = next((b for b in bad if b["key"] == "console"), None)
+        if console_bad:
+            log("")
+            log("  数据来源控制台（收集哪个）：")
+            log("    [1] 企业版组织门户  https://tokenplan-enterprise.bailian.aliyunportal.com   ← 已实现")
+            log("    [2] 个人控制台      https://bailian.console.aliyun.com                      ← 尚未支持")
+            try:
+                ans = input("  选择并确认？[1/2]（默认 1） ").strip().lower()
+            except EOFError:
+                ans = "1"
+            if ans == "2":
+                for line in PERSONAL_UNSUPPORTED:
+                    log(line)
+                return {"ok": False, "exit": 2, "fatal": ["选择了尚未支持的个人控制台"], "issues": issues}
+            if ans not in ("", "1", "y", "yes"):
+                return {"ok": False, "exit": 2, "fatal": ["用户拒绝确认"], "issues": issues}
+            cfg.confirm("console", by=os.environ.get("USER", ""))
+            bad = [b for b in bad if b["key"] != "console"]
+            log("  ✓ 数据来源：企业版组织门户（已记录确认）")
+
+        if bad:
+            log("")
             for b in bad:
-                cfg.confirm(b["key"], by=os.environ.get("USER", ""))
-            log("  ✓ 已记录确认")
-        else:
-            return {"ok": False, "exit": 2, "fatal": ["用户拒绝确认"], "issues": issues}
+                log(f"  需要确认：{KEY_LABEL[b['key']]}")
+            try:
+                ans = input("  确认以上信息无误？[Y/n] ").strip().lower()
+            except EOFError:
+                ans = "y"
+            if ans in ("", "y", "yes"):
+                for b in bad:
+                    cfg.confirm(b["key"], by=os.environ.get("USER", ""))
+                log("  ✓ 已记录确认")
+            else:
+                return {"ok": False, "exit": 2, "fatal": ["用户拒绝确认"], "issues": issues}
 
     for i in issues:
         log(f"  ⚠ {i}")

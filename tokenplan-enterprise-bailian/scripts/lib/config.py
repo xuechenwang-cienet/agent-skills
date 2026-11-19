@@ -2,7 +2,7 @@
 
 设计要点：
   · 配置与代码分离，全部在 config/ 下
-  · 四项确认（web_root / roster / pricing / calendar）各自记录「时间戳 + 内容哈希」
+  · 五项确认（console / web_root / roster / pricing / calendar）各自记录「时间戳 + 内容哈希」
   · 文件内容变化 → 哈希变化 → 该确认项立即失效（与 TTL 无关）
   · 后台模式：四项都有效才继续，否则退出码 2
 """
@@ -21,8 +21,9 @@ BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 CONFIG_DIR = os.path.join(BASE, "config")
 STATE_FILE = os.path.join(CONFIG_DIR, "state.json")
 
-CONFIRM_KEYS = ("web_root", "roster", "pricing", "calendar")
+CONFIRM_KEYS = ("console", "web_root", "roster", "pricing", "calendar")
 KEY_LABEL = {
+    "console": "数据来源控制台",
     "web_root": "Web root / Org ID",
     "roster": "人员名册",
     "pricing": "价格表",
@@ -103,6 +104,11 @@ class Config:
     @property
     def org_id(self) -> str: return self.web["org_id"]
 
+    @property
+    def console_type(self) -> str:
+        """数据来源控制台：enterprise（企业版组织门户）| personal（个人控制台，尚未支持）。"""
+        return (self.web.get("console_type") or "enterprise").strip().lower()
+
     def url(self, key: str) -> str:
         return self.root + self.web["paths"][key].format(org_id=self.org_id)
 
@@ -141,6 +147,7 @@ class Config:
     # ---------------- hashes ----------------
     def hashes(self) -> dict:
         return {
+            "console": _sha(self.console_type),
             "web_root": _sha(self.root, self.org_id),
             "roster": _sha(open(os.path.join(self.dir, "members.csv"), "rb").read()),
             "pricing": _sha(json.dumps(self.pricing, sort_keys=True, ensure_ascii=False, default=str)),
@@ -174,7 +181,7 @@ class Config:
         out = []
         for key in CONFIRM_KEYS:
             rec = (self.state.get("confirmed") or {}).get(key)
-            ttl = int(self.ttl[key])
+            ttl = int(self.ttl.get(key, 365))
             if not rec:
                 out.append(dict(key=key, ok=False, reason="从未确认", age_days=None, ttl=ttl))
                 continue

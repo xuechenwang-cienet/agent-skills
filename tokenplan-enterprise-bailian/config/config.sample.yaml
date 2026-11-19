@@ -13,7 +13,11 @@
 # ============================================================
 
 web:
-  # 控制台根地址（不含组织 ID）
+  # 数据来源控制台（二选一）：
+  #   enterprise — 企业版组织门户 https://tokenplan-enterprise.bailian.aliyunportal.com（当前唯一实现）
+  #   personal   — 个人控制台     https://bailian.console.aliyun.com（尚未支持，选它会直接停止）
+  console_type: enterprise
+  # 控制台根地址（不含组织 ID），须与 console_type 对应
   root: https://tokenplan-enterprise.bailian.aliyunportal.com
   # 组织 ID，位于 URL 中 /org_xxx/ 部分
   org_id: org_0000000000000000000000000000000   # ← 换成你自己的组织 ID（在控制台 URL 的 /org_xxx/ 段）
@@ -106,6 +110,7 @@ notify:
 # ------------------------------------------------------------
 confirmation:
   ttl_days:
+    console: 365
     web_root: 365
     roster: 30
     pricing: 90
