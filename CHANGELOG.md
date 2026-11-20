@@ -4,6 +4,18 @@
 
 版本号按技能独立演进；标题未标技能名的条目属于 `long-task-session`（早期所有条目都是它）。
 
+## tokenplan-enterprise-bailian 0.3.2 — 2026-11-20
+
+适配 browser-skill 0.5.0 协作模型 + 零用量画像兜底（此前未提交的运行时修复）。
+
+- **弃用合成点击**：0.5.0 扩展把页面内合成输入事件判定为「人工介入」并撤销 evaluate，
+  `JS_TRIGGER` 改为 `history.pushState + popstate` 触发 SPA 路由切换（usage ↔ overview），
+  全程无输入事件；`fetch_subscription` 同步改为路由往返捕获 AccountId
+- **bsk 兼容层**：动作前自动 `cooperate sync` 取 observation 并随动作传入，
+  `human_intervention / document_changed` 等状态失步自动重试；旧版 CLI 自动退回旧行为
+- **render_member 零用量兜底**：零用量席位的画像/分位字段可能为 None，统一补 0 避免
+  格式化崩溃（已有显式 None 处理的字段保留「—」展示）
+
 ## cienet-ppt-style 0.1.0 — 2026-11-10
 
 新增 [`cienet-ppt-style`](./cienet-ppt-style/)：CIeNET 公司 PPT 母版与配色规范技能。

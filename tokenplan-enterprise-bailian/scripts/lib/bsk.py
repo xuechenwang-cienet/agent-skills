@@ -89,17 +89,102 @@ def session_stop(sid: str):
 
 
 def navigate(sid: str, url: str, timeout_ms: int = 60000):
-    run(["navigate", url, "--session", sid, "--wait-until", "domcontentloaded",
-         f"--timeout={timeout_ms // 1000}s"], timeout=timeout_ms // 1000 + 30)
+    _action(["navigate", url, "--session", sid, "--wait-until", "domcontentloaded",
+             f"--timeout={timeout_ms // 1000}s"], sid, timeout=timeout_ms // 1000 + 30)
 
 
 def reload(sid: str):
-    run(["reload", "--session", sid], check=False)
+    _action(["reload", "--session", sid], sid, timeout=60, attempts=2)
+
+
+# ------------------------------------------------------------------
+# browser-skill 0.5.0+ 兼容层
+# 0.5.0 起默认为「人工协作」控制模型（target policy）：动作前需要
+# cooperate sync 取得 observation，并随动作传入 --observation。
+# 页面持续变化时可能报 document_changed，需要重新 sync 后重试。
+# 旧版 CLI 没有 cooperate 命令时自动退回旧行为（不带 observation）。
+# ------------------------------------------------------------------
+_COOP_RETRY_CODES = {
+    "cooperation_sync_required",
+    "observation_required",
+    "document_changed",
+    "ref_not_found",
+    "stale_observation",
+    "control_context_invalid",
+    # 人工触碰窗口会撤销进行中的动作；等人工停手后重新 sync 再试
+    "human_intervention",
+}
+
+
+def _parse_error(out: str) -> dict | None:
+    """bsk 出错时 stdout 是 JSON 错误对象（含 code）；成功时是普通文本或 {"ok": true,...}。"""
+    s = out.strip()
+    if not s.startswith("{"):
+        return None
+    try:
+        env = json.loads(s)
+    except Exception:
+        return None
+    if isinstance(env, dict) and env.get("code") and env.get("ok") is not True:
+        return env
+    return None
+
+
+def _sync_observation(sid: str, attempts: int = 8) -> str | None:
+    """cooperate sync 取得动作授权 observation；等页面 ready 后返回。
+
+    sync 回复里的 ready 为 false 说明页面仍在被采集/占用（busy），
+    立刻发动作会被判定 human_intervention 撤销，因此等 ready 再返回。
+    旧版 CLI 或始终拿不到 observation 时返回 None（退回旧行为）。
+    """
+    for i in range(attempts):
+        out = run(["cooperate", "sync", "--session", sid, "--settle", "--quiet", "--json"],
+                  check=False, timeout=90)
+        try:
+            env = json.loads(out)
+        except Exception:
+            return None  # 旧版 CLI：没有 cooperate 命令
+        obs = env.get("observation_id") if isinstance(env, dict) else None
+        if obs:
+            if env.get("ready") is False and i < attempts - 1:
+                wait(1.5)   # 页面仍 busy：等一拍重新 sync
+                continue
+            wait(0.8)       # 让 sync 自身的采集落定，避免与动作撞车
+            return str(obs)
+        wait(2)
+    return None
+
+
+def _action(args: list[str], sid: str, timeout: int, attempts: int = 5) -> str:
+    """执行一条浏览器动作：自动带 cooperate observation，状态失步时自动重试。
+
+    人工活动（哪怕只是鼠标在窗口上移动）会撤销进行中的动作，
+    重试间隔递增以吸收间断的人工活动。
+    """
+    last = ""
+    for i in range(attempts):
+        obs = _sync_observation(sid)
+        full = list(args)
+        if obs:
+            full += ["--observation", obs]
+        p = subprocess.run([_which()] + full, capture_output=True, text=True, timeout=timeout)
+        out = p.stdout or ""
+        err = _parse_error(out)
+        if err is None and p.returncode == 0:
+            return out
+        last = (p.stderr or out).strip()
+        code = (err or {}).get("code", "")
+        reason = (err.get("data") or {}).get("reason", "") if isinstance(err, dict) else ""
+        if code in _COOP_RETRY_CODES or reason in _COOP_RETRY_CODES:
+            wait(10 * (i + 1) if "human_intervention" in (code, reason) else 1.5 * (i + 1))
+            continue
+        raise BskError(f"bsk {args[0]} 失败（{p.returncode}）：{last[:400]}")
+    raise BskError(f"bsk {args[0]} 重试 {attempts} 次后仍失败：{last[:400]}")
 
 
 def evaluate(sid: str, expr: str, timeout: int = 180):
     """执行 JS，返回解析后的值（尝试 JSON 解析，失败则返回原始字符串）。"""
-    out = run(["evaluate", expr, "--session", sid, "--json"], timeout=timeout)
+    out = _action(["evaluate", expr, "--session", sid, "--json"], sid, timeout=timeout)
     try:
         env = json.loads(out)
     except Exception:

@@ -42,29 +42,30 @@ JS_HOOK = r"""
 })()
 """
 
-# ---- 触发一次数据刷新（两种模式都试，避免当前已处于其中一种状态而不发请求） ----
+# ---- 触发一次数据刷新 ----
+# browser-skill 0.5.0 起扩展将页面内的合成输入事件及由其引发的滚动/焦点
+# 变化判定为「人工介入」，会撤销正在执行的 evaluate，因此绝不能再模拟
+# 点击（旧版 mousedown/mouseup/click 方案已废弃）。
+# 现方案：history.pushState + popstate 触发 SPA 路由切换（usage ↔ overview），
+# 路由目标页挂载时自然发起带 sec_token 的数据请求，全程无输入事件。
 JS_TRIGGER = r"""
 (async function(){
   var sleep = function(ms){ return new Promise(function(r){ setTimeout(r, ms); }); };
-  function clickText(txt){
-    var nodes = [].slice.call(document.querySelectorAll('label,button,div,span'));
-    for (var i = 0; i < nodes.length; i++) {
-      var n = nodes[i];
-      if (n.textContent.trim() === txt && n.offsetParent !== null) {
-        n.dispatchEvent(new MouseEvent('mousedown', {bubbles:true}));
-        n.dispatchEvent(new MouseEvent('mouseup', {bubbles:true}));
-        n.click();
-        return true;
-      }
-    }
-    return false;
+  function switchRoute(){
+    try {
+      var u = new URL(location.href);
+      var target = /\/overview$/.test(u.pathname) ? '/usage' : '/overview';
+      u.pathname = u.pathname.replace(/\/(usage|overview)$/, target);
+      history.pushState({}, '', u.toString());
+      window.dispatchEvent(new PopStateEvent('popstate'));
+      return true;
+    } catch(e) { return false; }
   }
-  var before = window.__tp_cap.length;
-  var tries = ['按天查询', '按小时查询'];
-  for (var i = 0; i < tries.length; i++) {
-    clickText(tries[i]);
+  var before = window.__tp_cap ? window.__tp_cap.length : 0;
+  for (var i = 0; i < 3; i++) {
+    switchRoute();
     await sleep(2200);
-    if (window.__tp_cap.length > before) return 'ok:' + tries[i];
+    if (window.__tp_cap && window.__tp_cap.length > before) return 'ok:route-switch';
   }
   return 'no-request';
 })()
@@ -290,26 +291,33 @@ class TokenPlanClient:
 
     # ---------------- 订阅 / 席位 / 加油包 ----------------
     def fetch_subscription(self) -> dict:
-        # 订阅页的请求里带 AccountId，先 SPA 走一遍用量统计 → 订阅概览 以捕获它
+        # 订阅页的请求里带 AccountId。0.5.0 扩展将合成点击判定为人工介入，
+        # 改用 popstate 路由切换：先离开 overview 再回来，让订阅三接口在
+        # hook 已就位的情况下重新挂载触发（AccountId 在 QuerySubscription 请求体里）。
         self.open_overview()
         self._hook()
-        bsk.evaluate(self.sid, r"""
+        r = bsk.evaluate(self.sid, r"""
         (async function(){
-          var sleep = function(ms){ return new Promise(function(r){ setTimeout(r, ms); }); };
-          function clickText(txt){
-            var nodes = [].slice.call(document.querySelectorAll('a,div,span,button'));
-            for (var i=0;i<nodes.length;i++){ var n=nodes[i];
-              if (n.textContent.trim()===txt && n.offsetParent!==null){
-                n.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));
-                n.click(); return true; } }
-            return false;
+          var sleep = function(ms){ return new Promise(function(rr){ setTimeout(rr, ms); }); };
+          function go(name){
+            try {
+              var u = new URL(location.href);
+              u.pathname = u.pathname.replace(/\/(usage|overview)$/, '/' + name);
+              history.pushState({}, '', u.toString());
+              window.dispatchEvent(new PopStateEvent('popstate'));
+              return true;
+            } catch(e) { return false; }
           }
           window.__tp_cap = window.__tp_cap || [];
-          clickText('用量统计'); await sleep(2500);
-          clickText('订阅概览'); await sleep(3500);
-          return 'ok';
+          var before = window.__tp_cap.length;
+          go('usage'); await sleep(2200);
+          go('overview'); await sleep(3500);
+          if (window.__tp_cap.length > before) return 'ok:route-walk';
+          return 'no-request';
         })()
         """)
+        if isinstance(r, str) and r.startswith("no-request"):
+            self.log("  ! 路由切换未产生请求，尝试直接读取已捕获内容")
         cap = bsk.evaluate(self.sid, JS_READ_CAP) or {}
         self.token = cap.get("token") or self.token
         self.account = cap.get("account") or self.account

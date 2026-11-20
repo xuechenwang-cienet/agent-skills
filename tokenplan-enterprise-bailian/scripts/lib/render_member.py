@@ -36,6 +36,17 @@ def render(A, cfg, key: str, accent: str, role: str = "member") -> str:
     p = by_key[key]
     pr = p["profile"]
     pct = p["pct"]
+    # 零用量席位：画像/分位字段可能为 None（无数据），统一兜底避免格式化崩溃。
+    # 已有显式 None 处理的字段（avg_span_h / credits_per_active_hour /
+    # tokens_per_active_min）不在此列，保留其「—」展示。
+    for _k in ("avg_min_day", "night_share", "active_minutes", "peak_share",
+               "session_avg_min", "sessions_per_day", "sessions",
+               "active_days", "streak_max", "peak_credits"):
+        if pr.get(_k) is None:
+            pr[_k] = 0
+    for _k in list(pct.keys()):
+        if pct.get(_k) is None:
+            pct[_k] = 0
     group = next(g for g in A["groups"] if g["name"] == p["owner"])
     gb = group["behavior"]
     beh = A["behavior"]
