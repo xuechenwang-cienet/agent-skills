@@ -319,7 +319,8 @@ def _behavior_pass(cfg, people: list, sample: dict, tz=None) -> dict:
     return behavior
 
 
-def build(cfg, csv_path: str, subscription: dict, cal, month: tuple[int, int], log=print) -> dict:
+def build(cfg, csv_path: str, subscription: dict, cal, month: tuple[int, int], log=print,
+          member_seats: dict | None = None) -> dict:
     year, mon = month
     warnings: list[str] = []
     beh = dict(cfg.raw.get("behavior") or {})   # 行为画像口径（可选配置，不参与确认哈希）
@@ -341,6 +342,65 @@ def build(cfg, csv_path: str, subscription: dict, cal, month: tuple[int, int], l
     rate_end = end_date - dt.timedelta(days=1) if partial else end_date
     if partial:
         warnings.append(f"最后一天 {end_date} 数据不完整（截至 {data_end[11:16]}），已从日均样本中剔除")
+
+    # ---------------- 席位分配口径（成员管理页） ----------------
+    # 成员席位分配来自 UacListOrgMembersWithSeat（raw/organization_members.json）。
+    # 未分配席位的成员不计入统计：无额度、无结余、不进采购测算，仅在管理版列名单。
+    # 已分配席位的成员，其本周期额度以控制台 CycleTotalValue 为准（按分配日折算，
+    # 与订阅页「剩X/共Y」一致），名册 seat_credits 仅作缺数据时的兜底。
+    def _norm(s):
+        return re.sub(r"[\s_\-\.]", "", str(s or "")).lower()
+
+    seat_by_acc: dict[str, dict] = {}
+    seated_names: set[str] = set()
+    console_seated: list[dict] = []
+    if member_seats:
+        console_seated = [it for it in member_seats.get("members", []) if it.get("seat")]
+        for it in console_seated:
+            if it.get("account_id"):
+                seat_by_acc[it["account_id"]] = it["seat"]
+            if it.get("account_name"):
+                seated_names.add(_norm(it["account_name"]))
+
+    def _seat_of(m):
+        """该成员命中的控制台席位（按账号 id 优先，缺 id 时按显示名兜底）。"""
+        for a in m.account_ids:
+            if a in seat_by_acc:
+                return seat_by_acc[a]
+        for a in m.accounts:
+            if _norm(a) in seated_names:
+                for it in console_seated:
+                    if _norm(it.get("account_name")) == _norm(a):
+                        return it["seat"]
+        return None
+
+    exclude_unseated = bool((cfg.raw.get("stats") or {}).get("exclude_unseated_members", True))
+    if member_seats is not None and not member_seats.get("members"):
+        warnings.append("organization_members.json 内容为空，视为无席位分配数据")
+        member_seats = None
+    members = cfg.members
+    excluded_ms = []           # 被排除的 Member 对象
+    excluded_members: list[dict] = []
+    if member_seats and exclude_unseated:
+        members = []
+        for m in cfg.members:
+            if _seat_of(m) is not None:
+                members.append(m)
+            else:
+                excluded_ms.append(m)
+                excluded_members.append({"name": m.name_zh, "label": m.label,
+                                         "owner": m.team_owner, "credits": 0.0})
+        if excluded_members:
+            warnings.append(f"{len(excluded_members)} 名成员未分配席位，已不计入统计（名单见管理版报告）")
+    elif member_seats:
+        warnings.append("stats.exclude_unseated_members=false：未按席位分配过滤，全量名册统计")
+    else:
+        warnings.append("无成员席位分配数据（organization_members.json 缺失），按全量名册统计")
+
+    # 控制台有席位、但没匹配到任何名册成员的账号（需补名册或修账号映射）
+    unmatched_seated = [it for it in console_seated
+                        if it["account_id"] not in {a for m in cfg.members for a in m.account_ids}
+                        and _norm(it.get("account_name")) not in {_norm(a) for m in cfg.members for a in m.accounts}]
 
     # ---------------- 名册映射 ----------------
     acc2m = {a: m for m in cfg.members for a in m.account_ids}
@@ -549,14 +609,20 @@ def build(cfg, csv_path: str, subscription: dict, cal, month: tuple[int, int], l
 
     sw, se = max(sample["workday"], 1), max(sample["weekend"], 1)
     people = []
-    for m in cfg.members:
+    for m in members:
         d = P[key_of(m)]
+        m_seat = _seat_of(m)
+        # 周期额度：控制台本周期总额度（按分配日折算）；无席位数据时回退名册额度
+        quota = m.seat_credits
+        if m_seat and m_seat.get("cycle_total"):
+            quota = int(round(m_seat["cycle_total"]))
+        # 控制台规格值：standard / pro（订阅接口 SeatType 同为 pro）
+        premium = (m_seat.get("spec") in ("premium", "pro")) if m_seat else m.premium
         wd_rate = d["day"]["workday"] / sw
         we_rate = d["day"]["weekend"] / se
         next_fc = wd_rate * next_month["workday"] + we_rate * next_month["weekend"]
         rem_fc = wd_rate * remaining.get("workday", 0) + we_rate * remaining.get("weekend", 0)
-        quota = m.seat_credits
-        unit_price = prm_p / prm_c if m.premium else std_p / std_c
+        unit_price = prm_p / prm_c if premium else std_p / std_c
         projected = d["credits"] + rem_fc
         unused = max(0.0, quota - projected)
         waste = unused * unit_price
@@ -565,8 +631,8 @@ def build(cfg, csv_path: str, subscription: dict, cal, month: tuple[int, int], l
             "name_en": m.name_en, "email": m.email,
             "owner": m.team_owner, "dept": m.dept, "pcode": m.pcode,
             "accounts": m.accounts, "shared_with": m.sharing_with,
-            "quota": quota, "premium": m.premium,
-            "seat_unit_price": unit_price, "seat_fee": prm_p if m.premium else std_p,
+            "quota": quota, "premium": premium,
+            "seat_unit_price": unit_price, "seat_fee": prm_p if premium else std_p,
             "credits": d["credits"], "seat": d["seat"], "pack": d["pack"], "rows": d["rows"],
             "models": dict(d["model"].most_common()),
             "top_model": (d["model"].most_common(1)[0][0] if d["model"] else "—"),
@@ -579,7 +645,7 @@ def build(cfg, csv_path: str, subscription: dict, cal, month: tuple[int, int], l
             "rem_forecast": rem_fc, "projected": projected,
             "unused": unused, "waste": waste,
             "forecast": next_fc, "pack_forecast": max(next_fc - quota, 0),
-            "cost_now": (prm_p if m.premium else std_p) + d["pack"] * pack_p / pack_c,
+            "cost_now": (prm_p if premium else std_p) + d["pack"] * pack_p / pack_c,
             "status": ("未开通" if not m.accounts else
                        "席位结余" if unused > quota * cfg.forecast["seat_unused_threshold"] else
                        "席位用尽" if d["credits"] >= quota * 0.995 else
@@ -593,7 +659,7 @@ def build(cfg, csv_path: str, subscription: dict, cal, month: tuple[int, int], l
 
     # ---------------- 分组 ----------------
     groups = []
-    for owner in dict.fromkeys(m.team_owner for m in cfg.members):
+    for owner in dict.fromkeys(m.team_owner for m in members):
         ps = [p for p in people if p["owner"] == owner]
         groups.append({
             "name": owner, "count": len(ps),
@@ -701,6 +767,15 @@ def build(cfg, csv_path: str, subscription: dict, cal, month: tuple[int, int], l
     unused_people = [p for p in people if p["unused"] > p["quota"] * thr]
     waste_total = sum(p["waste"] for p in unused_people)
 
+    # 未分配席位成员若本月仍有用量（如月中被回收席位），单独披露
+    for m, e in zip(excluded_ms, excluded_members):
+        e["credits"] = round(P[key_of(m)]["credits"], 2)
+    leaked = [e for e in excluded_members if e["credits"]]
+    if leaked:
+        warnings.append(
+            f"{len(leaked)} 名未分配席位成员本月仍有用量（可能月中被回收席位），"
+            f"合计 {sum(e['credits'] for e in leaked):,.0f} 点，未计入统计")
+
     return {
         "meta": {
             "generated_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -715,6 +790,17 @@ def build(cfg, csv_path: str, subscription: dict, cal, month: tuple[int, int], l
         "subscription": subscription,
         "rates": rates, "calls": calls, "models": models,
         "people": people, "groups": groups, "unmapped": unmapped,
+        "excluded_members": excluded_members,
+        "seat_filter": {
+            "applied": bool(member_seats) and exclude_unseated,
+            "source": "organization_members.json" if member_seats else None,
+            "console_seated": len(console_seated),
+            "roster_seated": len(members) if member_seats else len(people),
+            "console_quota_sum": round(sum((s.get("cycle_total") or 0) for s in seat_by_acc.values()), 2),
+            "unmatched_seated_accounts": [
+                {"account_id": it["account_id"], "account_name": it.get("account_name"),
+                 "spec": (it.get("seat") or {}).get("spec")} for it in unmatched_seated],
+        },
         "procurement": procurement,
         "behavior": behavior,
         "waste": {"threshold": thr, "total": waste_total,

@@ -31,18 +31,25 @@ def run(cfg, A, files, out_dir, log, extra=None):
 
     # 4. 每个席位都归属一个组
     orphan = [p for p in A["people"] if not p["owner"]]
-    chk("所有席位都有项目组", not orphan, f"{len(orphan)} 个未归属")
+    chk("所有已计入统计的席位都有项目组", not orphan, f"{len(orphan)} 个未归属")
 
     # 5. 未映射账号（警告级）
     chk("Bailian 账号全部映射到名册", not A["unmapped"],
         f"{len(A['unmapped'])} 个未归属账号，合计 {sum(u['credits'] for u in A['unmapped']):,.0f} 点"
         if A["unmapped"] else "全部命中")
 
-    # 6. 席位容量 vs 订阅快照
+    # 5b. 控制台已分配席位的账号全部映射到名册（警告级：即使零用量也要能归属到人）
+    sf = A.get("seat_filter") or {}
+    unsig = sf.get("unmatched_seated_accounts") or []
+    chk("控制台席位账号全部映射到名册", not unsig,
+        "未映射：" + "、".join(u["account_name"] or u["account_id"] for u in unsig)
+        if unsig else f"{sf.get('console_seated', '—')} 个席位账号全部命中")
+
+    # 6. 席位容量 vs 订阅快照（额度口径：控制台本周期 CycleTotalValue，缺数据时回退名册）
     sub = A["subscription"]
     sub_cap = sum(s.get("cap", 0) for s in sub.get("seats", []))
     chk("席位容量与订阅一致", abs(sub_cap - A["procurement"]["seat_cap"]) < 1,
-        f"订阅 {sub_cap:,} vs 名册 {A['procurement']['seat_cap']:,}")
+        f"订阅 {sub_cap:,} vs 统计口径 {A['procurement']['seat_cap']:,}")
 
     # 7. 日历覆盖
     chk("目标月份日历已核对", A["calendar"]["verified"], A["calendar"]["month"])
@@ -79,7 +86,7 @@ def run(cfg, A, files, out_dir, log, extra=None):
         f"不一致 {tz.get('mismatch', 0)}/{tz.get('checked', 0)}"
         f"（{tz.get('ratio', 0):.2f}%）" if tz.get("checked") else "无样本")
 
-    # 13. 权限边界：基础版报告不得包含管理节（警告级）
+    # 13. 权限边界：基础版报告不得包含管理节（警告级），也不得出现未分配席位成员的名字
     basic_path = next((f for f in files if os.path.basename(f) == "token_credits_report.html"), None)
     if basic_path:
         try:
@@ -89,8 +96,14 @@ def run(cfg, A, files, out_dir, log, extra=None):
         sentinels = [s for s in ('id="groups"', 'id="behavior"', 'id="matrix"',
                                  'id="subs"', 'id="seat"', 'id="advice"',
                                  'class="chip mgmt"') if s in basic_html]
-        chk("基础版报告不含管理节", not sentinels,
-            f"混入管理内容：{sentinels}" if sentinels else "通过")
+        excl_names = [e["name"] for e in (A.get("excluded_members") or []) if e.get("name")]
+        name_hits = [n for n in excl_names if n and n in basic_html]
+        detail = []
+        if sentinels:
+            detail.append(f"混入管理内容 {sentinels}")
+        if name_hits:
+            detail.append(f"出现未分配席位成员名字 {name_hits}")
+        chk("基础版报告不含管理内容", not detail, "；".join(detail) if detail else "通过")
 
     b = A.get("behavior") or {}
     n_member = len([f for f in files if os.path.basename(f).startswith("member-")])
@@ -98,9 +111,10 @@ def run(cfg, A, files, out_dir, log, extra=None):
         f"最活跃 {b.get('busiest_hour', 0):02d}:00 · 个人报告 {n_member} 份")
 
     ok = all(c["ok"] for c in checks if c["name"] not in
-             ("Bailian 账号全部映射到名册", "目标月份日历已核对", "下月日历已核对",
+             ("Bailian 账号全部映射到名册", "控制台席位账号全部映射到名册",
+              "目标月份日历已核对", "下月日历已核对",
               "个人报告数量 = 有账号席位数", "行为分布合计 = 部门总点数",
-              "peak/offpeak 与时间戳一致", "基础版报告不含管理节"))
+              "peak/offpeak 与时间戳一致", "基础版报告不含管理内容"))
 
     manifest = {
         "ok": ok,
@@ -110,6 +124,8 @@ def run(cfg, A, files, out_dir, log, extra=None):
         "records": A["meta"]["rows"],
         "total_credits": round(A["meta"]["total_credits"], 2),
         "next_month_forecast": round(A["meta"]["total_forecast"], 2),
+        "seat_filter": A.get("seat_filter"),
+        "excluded_members": A.get("excluded_members"),
         "config_hashes": cfg.hashes(),
         "calendar": A["calendar"],
         "procurement": A["procurement"],

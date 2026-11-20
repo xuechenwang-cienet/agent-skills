@@ -14,3 +14,7 @@ __pycache__/
 *.pyc
 .venv/
 .DS_Store
+
+# ---------- 探针/临时产物（含真实组织数据，不入库） ----------
+out/
+config/members.csv.bak-*

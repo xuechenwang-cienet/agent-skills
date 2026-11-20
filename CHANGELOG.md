@@ -16,6 +16,31 @@
 - **render_member 零用量兜底**：零用量席位的画像/分位字段可能为 None，统一补 0 避免
   格式化崩溃（已有显式 None 处理的字段保留「—」展示）
 
+## tokenplan-enterprise-bailian 0.4.0 — 2026-11-20
+
+统计口径对齐成员管理页：**未分配席位的成员不计入统计**，席位额度取控制台本周期实际额度。
+
+- **s2 新增成员席位分配抓取**：成员管理页 `UacListOrgMembersWithSeat`（OrgId/PageNum/PageSize
+  分页拉全组织成员），落盘 `raw/organization_members.json`。行级字段：`AccountId` / `AccountName` /
+  `SeatId` / `SpecType`（standard｜pro）/ 本周期 `CycleSurplusValue` / `CycleTotalValue`。
+  「有席位」以 `SeatId`+`SpecType` 为准（有历史 API Key 不代表有席位）。抓取失败不阻塞流程，
+  s3 回退全量名册口径并告警
+- **s3 席位分配过滤**（`stats.exclude_unseated_members`，默认 true）：未分配席位的成员从
+  逐人/分组/行为/结余/采购全部剔除，`analysis.json` 记 `excluded_members` 与 `seat_filter`；
+  名册匹配账号 id 优先、显示名兜底；若被排除成员本月仍有用量（月中被回收席位）在管理版单独披露
+- **席位额度改用控制台周期额度**：`CycleTotalValue`（按席位分配日折算，与订阅页「剩 X / 共 Y」
+  完全一致）替代名册名义额度，修正了此前 s5「席位容量与订阅一致」长期失败的口径问题
+  （订阅 926,668 vs 名册 1,050,000 → 现在精确相等）。premium 判定兼容 `pro` 规格值
+- **管理版订阅节**新增：总席位/已分配/剩余未分配、未计入统计成员名单、统计口径说明
+- **权限边界加固**：warning 不再携带被排除成员人名（基础版会渲染 warnings），名单只进管理版；
+  s5 检查 #14 扩展为「基础版不含管理内容」（哨兵 + 排除成员名字扫描）
+- **s5 自检**：#6 改为控制台周期额度口径；新增「控制台席位账号全部映射到名册」（警告级）；
+  manifest 记录 `seat_filter` / `excluded_members`
+- **import_roster.py**：新增 `--merge-from`（按 hrid/姓名/邮箱合并保留旧账号映射）与
+  `--members-json`（从席位分配快照自动补全账号映射）；202611 名册导入：38 人 / 8 组（新增齐慧组）
+- **验证**（2026-11-20，复用 11-19 明细）：35 个席位账号全部命中名册；标准 34+pro 1 席位容量
+  926,668 与订阅精确一致；排除姜波/曹哲/施晓明（3 人，零用量）；齐慧/邓正浩按折算额度 19,167 计
+
 ## cienet-ppt-style 0.1.0 — 2026-11-10
 
 新增 [`cienet-ppt-style`](./cienet-ppt-style/)：CIeNET 公司 PPT 母版与配色规范技能。

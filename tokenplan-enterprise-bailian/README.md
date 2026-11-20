@@ -45,14 +45,20 @@ cp config/members.sample.csv config/members.csv
 | `config/holidays.yaml` | 每年更新节假日与调休 | ✓ |
 | `config/*.sample.*` | 模板，勿直接使用 | ✓ |
 
-名册可以从 xlsx 一次性导入：
+名册可以从 xlsx 一次性导入；已有配置时用 `--merge-from` 保留账号映射，并可用 `--members-json`
+（s2 产出的席位分配快照）自动补全 Bailian 账号：
 
 ```bash
 python3 scripts/tools/import_roster.py --xlsx "../202610_usage.xlsx" --accounts accounts.json
+python3 scripts/tools/import_roster.py --xlsx "../202611_usage.xlsx" \
+    --merge-from config/members.csv --members-json output/<date>/raw/organization_members.json
 ```
 
 `accounts.json` 是 `[{"id":"acc_xxx","name":"Bailian 显示名"}, …]`，用于填充 `bailian_account_ids`。
-没有它也能导入，但运行时匹配不到账号会全部落到「未归属」。
+没有账号映射也能导入，运行时匹配不到会落到「未归属」。
+
+> **统计口径**：只统计「已分配席位」的成员（来自成员管理页接口，未分配席位的成员仅在管理版列名单）；
+> 席位额度取控制台本周期实际额度。名册里的 `seat_credits` 只是接口数据缺失时的兜底。
 
 ### 3. 跑
 

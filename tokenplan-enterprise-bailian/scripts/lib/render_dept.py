@@ -440,6 +440,17 @@ def _sec_subs(A, cfg) -> str:
     std, prm = seats.get("standard", {}), seats.get("pro", {})
     pack = sub.get("pack", {})
     pc = cfg.pricing
+    excl = A.get("excluded_members") or []
+    seat_total = sum((s.get("total_seats") or 0) for s in sub.get("seats", []))
+    seat_assigned = sum((s.get("assigned") or 0) for s in sub.get("seats", []))
+    unassigned = sub.get("seats_unassigned")
+    if unassigned is None:
+        unassigned = max(0, seat_total - seat_assigned)
+    excl_txt = ""
+    if excl:
+        names = "、".join(e["name"] + (f"（本月仍用 {e['credits']:,.0f} 点）" if e.get("credits") else "")
+                          for e in excl)
+        excl_txt = f"另有 <b>{len(excl)}</b> 名成员未分配席位、未计入统计：{esc(names)}。"
     return f'''<section id="subs"><div class="wrap">
   <div class="sec-head"><span class="sec-num">04</span><h2>当前订阅与容量</h2>{MGMT_BADGE}</div>
   <p class="sec-note">以下为订阅概览接口实测值（{sub.get("fetched_at", "—")}），非推算。
@@ -455,6 +466,8 @@ def _sec_subs(A, cfg) -> str:
   </div>
   <div class="kv rv">
     <div>组织成员</div><div>{sub.get("org", {}).get("total_members", "—")} 人，已分配坐席 <b>{sub.get("org", {}).get("seated", "—")}</b>，未分配 {sub.get("org", {}).get("unseated", "—")}。</div>
+    <div>席位分配</div><div>总席位 <b>{seat_total}</b>（标准 {std.get("total_seats", 0)} + 高级 {prm.get("total_seats", 0)}），已分配 <b>{seat_assigned}</b>，剩余未分配 <b>{unassigned}</b>。{excl_txt or "名册成员全部已分配席位。"}</div>
+    <div>本报告统计口径</div><div>仅统计<b>已分配席位</b>的成员（{len(A["people"])} 人）；席位额度按控制台本周期实际额度（CycleTotalValue，按席位分配日折算），与订阅页「剩 X / 共 Y」一致。</div>
     <div>加油包单价</div><div>¥{pc["pack"]["price"]:,} / {pc["pack"]["credits"]:,} 点 = <b>¥{pc["pack"]["price"] / pc["pack"]["credits"]:.4f}/点</b></div>
     <div>标准席位</div><div>¥{pc["standard_seat"]["price"]} / {pc["standard_seat"]["credits"]:,} 点 = <b>¥{pc["standard_seat"]["price"] / pc["standard_seat"]["credits"]:.4f}/点</b></div>
     <div>高级坐席</div><div>¥{pc["premium_seat"]["price"]} / {pc["premium_seat"]["credits"]:,} 点 = <b>¥{pc["premium_seat"]["price"] / pc["premium_seat"]["credits"]:.4f}/点</b>，全场最低</div>

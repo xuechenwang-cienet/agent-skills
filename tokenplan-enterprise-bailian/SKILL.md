@@ -2,13 +2,14 @@
 name: tokenplan-enterprise-bailian
 description: >
   阿里云百炼 Token Plan 组织用量分析：从控制台导出全量用量明细，反推每个模型/时段/token 类型的
-  Credits 结算系数，按项目组汇总用量，预测下月消耗与席位结余。报告按角色分层：基础版（系数口径，
-  所有人）、管理版（组/人/成本，限老板）、组报告（限组长）、个人画像（人手一份）。数据来源分两类
-  控制台——企业版组织门户与个人控制台，运行前必须先问客户收集哪个（当前仅实现企业版）。触发场景：
-  用户提到"百炼用量"、"Token Plan"、"Credits 系数"、"token 兑换率"、"部门用量报告"、"项目组用量"、
-  "席位结余"、"下月采购建议"、"个人用量画像"、"员工使用统计"、"报告权限分层"、"tokenplan 分析"、
-  "bailian usage report"、"企业版控制台"、"个人版控制台"。也可作为定时任务（--non-interactive）
-  每周生成当月报告。
+  Credits 结算系数，按项目组汇总用量，预测下月消耗与席位结余。以成员管理页的席位分配为统计口径：
+  未分配席位的成员不计入统计（仅管理版列名单），席位额度取控制台本周期实际额度。报告按角色分层：
+  基础版（系数口径，所有人）、管理版（组/人/成本，限老板）、组报告（限组长）、个人画像（人手一份）。
+  数据来源分两类控制台——企业版组织门户与个人控制台，运行前必须先问客户收集哪个（当前仅实现企业版）。
+  触发场景：用户提到"百炼用量"、"Token Plan"、"Credits 系数"、"token 兑换率"、"部门用量报告"、
+  "项目组用量"、"席位结余"、"席位分配"、"剩余未分配席位"、"下月采购建议"、"个人用量画像"、
+  "员工使用统计"、"报告权限分层"、"tokenplan 分析"、"bailian usage report"、"企业版控制台"、
+  "个人版控制台"。也可作为定时任务（--non-interactive）每周生成当月报告。
 ---
 
 # Token Plan 用量分析
@@ -90,10 +91,10 @@ python3 scripts/run.py --tag evening
 |---|---|---|---|
 | s0 | `steps/s0_preflight.py` | 依赖检查、数据来源判定、五项确认校验、名册/日历一致性 | 控制台摘要 |
 | s1 | `steps/s1_usage.py` | 打开用量页、捕获 `sec_token`、提交导出任务、轮询、下载 | `raw/usage_detail.csv` |
-| s2 | `steps/s2_subscription.py` | 调订阅接口取席位/加油包 | `raw/subscription.json` |
-| s3 | `steps/s3_analyze.py` | 系数、逐人、分组、模型、预测、结余、采购 | `data/analysis.json` |
+| s2 | `steps/s2_subscription.py` | 调订阅接口取席位/加油包；抓成员管理页的席位分配 | `raw/subscription.json` `raw/organization_members.json` |
+| s3 | `steps/s3_analyze.py` | 系数、逐人、分组、模型、预测、结余、采购（按席位分配过滤） | `data/analysis.json` |
 | s4 | `steps/s4_render.py` | 部门报告 + 各组报告 + 个人画像报告 + 系数表 + 收件人清单 | `*.html` `*.xlsx` `recipients.csv` |
-| s5 | `steps/s5_manifest.py` | 10 项自检 + 清单 | `manifest.json` |
+| s5 | `steps/s5_manifest.py` | 自检 + 清单 | `manifest.json` |
 
 每一步都可单独重跑，`--from s3` 跳过抓数。
 
@@ -101,7 +102,7 @@ python3 scripts/run.py --tag evening
 
 | 文件 | 内容 |
 |---|---|
-| `config.yaml` | **数据来源控制台（`console_type`）**、Web root / Org ID、导出参数、**价格**、预测参数、输出策略（含 `member_reports`）、行为口径 `behavior`（可选）、TTL（**不入库**，由 sample 复制） |
+| `config.yaml` | **数据来源控制台（`console_type`）**、Web root / Org ID、导出参数、**价格**、预测参数、**统计口径（`stats`）**、输出策略（含 `member_reports`）、行为口径 `behavior`（可选）、TTL（**不入库**，由 sample 复制） |
 | `members.csv` | 名册：姓名、邮箱、部门、P-code、**组长**、席位类型与额度、**共享人**、Bailian 账号（显示名 + acc_id）（**不入库**，由 sample 复制） |
 | `holidays.yaml` | 法定节假日 + 调休工作日 + `verified_months` |
 | `config.sample.yaml` / `members.sample.csv` | 模板，随仓库发布 |
@@ -136,6 +137,20 @@ sharing_with:         Zhang_Han
 
 > 运行时**只按 `bailian_account_ids` 匹配**，不猜名字。名册缺 ids 时会退化为按显示名匹配并告警。
 
+### 席位分配口径（成员管理页）
+
+s2 会抓成员管理页（`/organization/members/list`）的 `UacListOrgMembersWithSeat` 接口
+（分页拉全组织成员），落盘 `raw/organization_members.json`，s3 按它过滤统计：
+
+- **未分配席位的成员不计入任何统计**（组汇总、行为、结余、采购测算），不产个人报告、
+  不进 `recipients.csv`，仅在管理版订阅节列名单。开关 `stats.exclude_unseated_members`（默认 true）
+- **「有席位」以接口的 `SeatId`/`SpecType` 为准**——成员可能有历史 API Key 但席位已被回收，不能当依据
+- **席位额度 = 控制台本周期实际额度**（`CycleTotalValue`，按席位分配日折算，与订阅页
+  「剩 X / 共 Y」一致），名册 `seat_credits` 仅在缺接口数据时兜底。月中新分配的席位额度是折算值
+- 控制台有席位但名册未映射的账号 → s5 警告 + 管理版披露（需补名册或修账号映射）
+- 成员与席位的匹配：账号 id 精确匹配优先，名册缺 id 时按显示名兜底；导入名册时可用
+  `import_roster.py --members-json` 自动补全账号映射
+
 ### 节假日
 
 `holidays.yaml` 用 `verified_months` 标记已核对过的月份。目标月份未核对时：
@@ -150,6 +165,7 @@ sharing_with:         Zhang_Han
 output/2026-10-20/
 ├── raw/usage_detail.csv           全量明细（几分钟到十几 MB）
 ├── raw/subscription.json          订阅/席位/加油包快照
+├── raw/organization_members.json  组织成员与席位分配快照（103 人/35 席位级明细）
 ├── data/analysis.json             结构化分析结果（可单独消费）
 ├── token_credits_report.html      基础版：系数与计费口径（所有人可阅）
 ├── management_report.html         管理版：组/人/成本管理节（仅部门老板）
@@ -224,11 +240,16 @@ output/2026-10-20/
    在页面里 hook `XMLHttpRequest.prototype.send`，触发一次粒度切换即可捕获。
 3. **订阅页**：「用量统计」↔「订阅概览」是 SPA 路由，hook 不丢，一次 hook 即可抓到
    `QuerySubscription` / `QuerySubscriptionPackInfo` / `UacGetOrgMemberStatsWithSeat` 的参数并直接调用。
-4. **导出上限**：接口单次最多 **100,000 行**，超出会返回
+4. **成员管理页**：`UacListOrgMembersWithSeat`（`{OrgId, Locale, PageNum, PageSize}`，分页拉全）。
+   行字段：`AccountId` / `AccountName` / `Roles`；已分配席位的行另有 `SeatId` / `SpecType`
+   （standard｜pro）/ `SubscriptionInfo.EquityList[0].CycleSurplusValue|CycleTotalValue`
+   （该席位本周期剩余/总额度）。页面顶部「剩余未分配席位」= 订阅席位总数 − 已分配。
+   注意**不能用 unwrap**（`data.Data` 就是成员列表，会把 `Total` 层剥掉）。
+5. **导出上限**：接口单次最多 **100,000 行**，超出会返回
    `Status=FAILED / 导出数据量超过限制（N > 100000）`。
    脚本会自动**按日期二分递归**，直到每段都在限制内，最后合并并按整行去重
    （合并时打印每段的条数，例如 `52,506 + 55,512 → 107,794`）。
-5. **兜底**：捕获不到 token 时先重试触发，仍失败则退出码 3 并在日志写明卡点。
+6. **兜底**：捕获不到 token 时先重试触发，仍失败则退出码 3 并在日志写明卡点。
 
 ## 自检（s5）
 
@@ -237,16 +258,17 @@ output/2026-10-20/
 1. 系数全部为整数
 2. 系数组合无重复行（`(模型, 档位, 时段)` 唯一）
 3. 各组点数之和 = 部门总点数
-4. 所有席位都归属某个组
+4. 所有已计入统计的席位都归属某个组
 5. Bailian 账号全部映射到名册（**警告级**，未映射的单独列「未归属」）
-6. 席位容量与订阅快照一致
-7. 目标月份 / 下月日历已核对（**警告级**）
-8. 所有报告文件已生成
-9. 组报告数量 = 项目组数
-10. 个人报告数量 = 有账号席位数（**警告级**，`member_reports` 关闭时跳过）
-11. 行为分布（24h / 逐日）合计 = 部门总点数（**警告级**）
-12. `peak`/`offpeak` 后缀与时间戳小时一致率 ≥98%（**警告级**，异常说明导出时区或时段口径变了，作息图不可信）
-13. 基础版报告不含管理节（**警告级**，扫描组/行为/矩阵/订阅/结余/诊断节哨兵，防权限泄漏）
+6. 控制台已分配席位的账号全部映射到名册（**警告级**，含零用量的席位账号）
+7. 席位容量与订阅一致（额度口径 = 控制台本周期额度之和，缺数据时回退名册额度）
+8. 目标月份 / 下月日历已核对（**警告级**）
+9. 所有报告文件已生成
+10. 组报告数量 = 项目组数
+11. 个人报告数量 = 有账号席位数（**警告级**，`member_reports` 关闭时跳过）
+12. 行为分布（24h / 逐日）合计 = 部门总点数（**警告级**）
+13. `peak`/`offpeak` 后缀与时间戳小时一致率 ≥98%（**警告级**，异常说明导出时区或时段口径变了，作息图不可信）
+14. 基础版报告不含管理内容（**警告级**，扫描管理节哨兵 + 未分配席位成员名字，防权限泄漏）
 
 ## 故障排查
 
@@ -257,8 +279,9 @@ output/2026-10-20/
 | 日志出现「超出上限，二分」 | 正常现象：单月明细超过 10 万行，已自动分段导出并合并 |
 | `未能捕获 sec_token` 且页面停在 `/login` | 登录态失效（Chrome 重启常见），需在该标签页重新登录后再跑 |
 | 系数不是整数 | 数据里出现了新的计费口径，检查 `manifest.json` 的 `unmapped` 与 `rates` |
-| 组报告缺人 | 名册里没有该 Bailian 账号；查 `manifest.json.unmapped` |
-| 席位容量对不上 | 名册的 `seat_credits` 与订阅不一致，更新 `members.csv` |
+| 组报告缺人 | 名册里没有该 Bailian 账号，或该成员**未分配席位**被过滤；查 `manifest.json.seat_filter` 与 `excluded_members` |
+| 席位容量对不上 | 优先看是不是席位分配口径差异：某成员没被分配席位（`raw/organization_members.json`）却保留了名册额度；确认成员管理页后再改 `members.csv` |
+| 控制台席位账号未映射 | 名册缺该成员或账号映射缺失；用 `import_roster.py --members-json` 补全 |
 
 ## 已知边界
 
@@ -268,4 +291,7 @@ output/2026-10-20/
 - 报告里的「折算 ¥」是用于横向比较的成本口径，**不等于财务账单分摊**
 - 作息与活跃时长是**计费桶推断**：反映「何时有调用」，受批处理任务影响大，不能当考勤或绩效依据
 - 明细导出若换成非 MINUTE 粒度（HOUR/DAY），活跃分钟与会话指标会失真，需同步调大 `session_gap_min`
+- 未分配席位的成员**完全不在统计里**：若某人月中被回收席位但月初有用量，其用量只以
+  「未计入统计」口径披露在管理版，不进组/人明细（避免额度口径混乱）
+- 席位分配快照是 s2 运行时刻的状态：月中分配变动后需重跑 s2（`--from s2`）才会反映
 - `--from s4` 读到旧版本 analysis.json（无画像字段）时会自动用同目录明细重跑 s3

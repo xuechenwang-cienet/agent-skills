@@ -365,3 +365,61 @@ class TokenPlanClient:
             "account_id": self.account,
         }
         return out
+
+    # ---------------- 成员席位分配（成员管理页） ----------------
+    def fetch_member_seats(self, page_size: int = 100, max_pages: int = 20) -> dict:
+        """成员管理页的成员列表（含席位分配状态），分页拉全。
+
+        UacListOrgMembersWithSeat: {OrgId, Locale, PageNum, PageSize} →
+          data: {Total, PageNo, PageSize, Success, Data[]}
+        行字段：AccountId / AccountName / Roles / Status；已分配席位的行另有
+        SeatId / SpecType（standard|premium）/ SubscriptionInfo（EquityList[0] 含
+        本周期 CycleSurplusValue / CycleTotalValue，即该席位本周期剩余/总额度）。
+        无 SeatId+SpecType = 未分配席位（可能有历史 API Key 残留，不能作依据）。
+        """
+        import datetime as _dt
+
+        self.capture(trigger=False)
+        members, page, total = [], 1, None
+        while page <= max_pages:
+            r = self.call([{"action": "UacListOrgMembersWithSeat",
+                            "params": {"OrgId": self.cfg.org_id, "Locale": "zh-CN",
+                                       "PageNum": page, "PageSize": page_size}}])
+            # 注意不能用 unwrap：该接口 data.Data 就是成员列表，会把 Total/PageNo 层剥掉
+            resp = r.get("UacListOrgMembersWithSeat")
+            d = resp.get("data") if isinstance(resp, dict) else None
+            d = d if isinstance(d, dict) else {}
+            rows = d.get("Data") or []
+            if total is None:
+                total = d.get("Total")
+            for it in rows:
+                seat = None
+                if it.get("SpecType") or it.get("SeatId"):
+                    sub_info = it.get("SubscriptionInfo") or {}
+                    eq = (sub_info.get("EquityList") or [{}])[0] if sub_info.get("EquityList") else {}
+                    seat = {
+                        "seat_id": it.get("SeatId"),
+                        "spec": it.get("SpecType"),
+                        "cycle_surplus": eq.get("CycleSurplusValue"),
+                        "cycle_total": eq.get("CycleTotalValue"),
+                        "cycle_start": eq.get("CycleStartTime"),
+                        "cycle_end": eq.get("CycleEndTime"),
+                    }
+                members.append({
+                    "account_id": it.get("AccountId"),
+                    "account_name": it.get("AccountName"),
+                    "roles": it.get("Roles") or [],
+                    "status": it.get("Status"),
+                    "seat": seat,
+                })
+            if not rows or (total is not None and len(members) >= total):
+                break
+            page += 1
+        seated = [m for m in members if m["seat"]]
+        return {
+            "fetched_at": _dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+            "org_id": self.cfg.org_id,
+            "total_members": total if total is not None else len(members),
+            "seated_count": len(seated),
+            "members": members,
+        }

@@ -121,9 +121,18 @@ def main():
                 return EXIT_DATA
             sub = json.load(open(sub_path, encoding="utf-8"))
 
+        # 成员席位分配（s2 产物；--from s3 复用时从 raw 目录读）
+        member_seats = None
+        mem_path = os.path.join(out_dir, "raw", "organization_members.json")
+        if os.path.exists(mem_path):
+            try:
+                member_seats = json.load(open(mem_path, encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                member_seats = None
+
         # ---------- s3 ----------
         if a.from_step in ("s1", "s2", "s3"):
-            A = s3.run(cfg, csv_path, sub, month, out_dir, log)
+            A = s3.run(cfg, csv_path, sub, month, out_dir, log, member_seats=member_seats)
         else:
             a_path = os.path.join(out_dir, "data", "analysis.json")
             # analysis.json 缺失或为旧版本产物（无行为画像字段）→ 用本地明细重跑 s3
@@ -137,7 +146,7 @@ def main():
             if need_s3:
                 log("· analysis.json " + ("缺失" if not os.path.exists(a_path) else "缺少行为画像字段")
                     + "，用本地明细重跑 s3 …")
-                A = s3.run(cfg, csv_path, sub, month, out_dir, log)
+                A = s3.run(cfg, csv_path, sub, month, out_dir, log, member_seats=member_seats)
 
         # ---------- s4 ----------
         files = s4.run(cfg, A, out_dir, log)
